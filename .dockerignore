@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.DS_Store
+storage/recordings/*
+storage/audio/*
+!storage/recordings/.gitkeep
+!storage/audio/.gitkeep

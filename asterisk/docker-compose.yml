@@ -1,0 +1,22 @@
+services:
+  dialyra_asterisk:
+    build:
+      context: ..
+      dockerfile: asterisk/Dockerfile
+    container_name: dialyra-asterisk
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "127.0.0.1:5038:5038"
+      - "10000-10100:10000-10100/udp"
+    volumes:
+      - ../asterisk:/etc/asterisk
+      - ../storage/audio:/var/lib/asterisk/sounds/custom
+      - ../storage/recordings:/var/spool/asterisk/monitor
+    networks:
+      - dialyra-net
+
+networks:
+  dialyra-net:
+    name: dialyra-net

@@ -1,0 +1,21 @@
+services:
+  dialyra_flask:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    container_name: dialyra-flask
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    ports:
+      - "5001:5000"
+    volumes:
+      - ../:/app
+      - ../storage/audio:/data/audio
+      - ../storage/recordings:/data/recordings
+    networks:
+      - dialyra-net
+
+networks:
+  dialyra-net:
+    name: dialyra-net

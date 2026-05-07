@@ -1,0 +1,22 @@
+services:
+  dialyra_fastagi:
+    build:
+      context: ..
+      dockerfile: fastagi/Dockerfile
+    container_name: dialyra-fastagi
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    command: ["python", "fastagi/server.py"]
+    ports:
+      - "127.0.0.1:4573:4573"
+    volumes:
+      - ../:/app
+      - ../storage/audio:/data/audio
+      - ../storage/recordings:/data/recordings
+    networks:
+      - dialyra-net
+
+networks:
+  dialyra-net:
+    name: dialyra-net
