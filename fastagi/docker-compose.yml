@@ -1,4 +1,40 @@
 services:
+  db:
+    image: postgres:15
+    container_name: dialyra-db
+    restart: unless-stopped
+    profiles: ["infra"]
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_DB: ${DB_NAME:-dialyra_db}
+      POSTGRES_USER: ${DB_USER:-dialyra_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dialyra_pass}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - dialyra_postgres_data:/var/lib/postgresql/data
+    networks:
+      dialyra-net:
+        aliases:
+          - db
+          - dialyra-db
+
+  redis:
+    image: redis:7
+    container_name: dialyra-redis
+    restart: unless-stopped
+    profiles: ["infra"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - dialyra_redis_data:/data
+    networks:
+      dialyra-net:
+        aliases:
+          - redis
+          - dialyra-redis
+
   dialyra_fastagi:
     build:
       context: ..
@@ -7,7 +43,21 @@ services:
     restart: unless-stopped
     env_file:
       - ../.env
+    environment:
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-dialyra_db}
+      DB_USER: ${DB_USER:-dialyra_user}
+      DB_PASSWORD: ${DB_PASSWORD:-dialyra_pass}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     command: ["python", "fastagi/server.py"]
+    depends_on:
+      db:
+        condition: service_started
+        required: false
+      redis:
+        condition: service_started
+        required: false
     ports:
       - "127.0.0.1:4573:4573"
     volumes:
@@ -20,3 +70,10 @@ services:
 networks:
   dialyra-net:
     name: dialyra-net
+    external: true
+
+volumes:
+  dialyra_postgres_data:
+    name: dialyra_postgres_data
+  dialyra_redis_data:
+    name: dialyra_redis_data
