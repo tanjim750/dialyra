@@ -119,6 +119,16 @@ def upsert_trunk(trunk):
     ps_reg = _qualified_table("ps_registrations")
     ps_ident = _qualified_table("ps_endpoint_id_ips")
 
+    needs_auth = (
+        (trunk.type == "registration")
+        or (
+            trunk.type == "ip"
+            and (trunk.auth_type or "").strip().lower() == "userpass"
+            and (trunk.username or "").strip() != ""
+            and password != ""
+        )
+    )
+
     with _realtime_conn(write=True) as conn:
         conn.execute(
             text(
@@ -139,23 +149,9 @@ def upsert_trunk(trunk):
             "context": trunk.context or "outbound",
             "from_user": trunk.from_user or trunk.username or "",
             "from_domain": trunk.from_domain or trunk.host,
+            "auth": ids["auth"] if needs_auth else "",
+            "outbound_auth": ids["auth"] if needs_auth else "",
         }
-    needs_auth = (
-        (trunk.type == "registration")
-        or (
-            trunk.type == "ip"
-            and (trunk.auth_type or "").strip().lower() == "userpass"
-            and (trunk.username or "").strip() != ""
-            and password != ""
-        )
-    )
-
-    if needs_auth:
-        endpoint_params["auth"] = ids["auth"]
-        endpoint_params["outbound_auth"] = ids["auth"]
-    else:
-        endpoint_params["auth"] = ""
-        endpoint_params["outbound_auth"] = ""
 
         conn.execute(
             text(
