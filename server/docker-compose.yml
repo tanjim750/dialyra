@@ -45,13 +45,8 @@ services:
       - ../.env
     environment:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      AMI_HOST: ${AMI_HOST:-dialyra-asterisk}
-      AMI_PORT: ${AMI_PORT:-5038}
-      AMI_USERNAME: ${AMI_USERNAME:-admin}
-      AMI_SECRET: ${AMI_SECRET:-dialyra123}
-      AMI_TIMEOUT: ${AMI_TIMEOUT:-5}
     ports:
-      - "5001:5000"
+      - "5000:5000"
     depends_on:
       db:
         condition: service_started
