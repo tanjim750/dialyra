@@ -1,7 +1,7 @@
 import os
 
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, request
 
 from app.config import CONFIG_MAP
 from app.cli import register_cli_commands
@@ -25,6 +25,7 @@ def create_app(config_name=None):
     register_request_id_middleware(app)
     register_error_handlers(app)
     register_blueprints(app)
+    register_v1_deprecation_marker(app)
     register_cli_commands(app)
 
     with app.app_context():
@@ -48,3 +49,38 @@ def register_blueprints(app):
     app.register_blueprint(access_tokens_bp)
     app.register_blueprint(businesses_bp)
     app.register_blueprint(internal_bp)
+
+    if app.config.get("AUTHZ_V2_ENABLED", False):
+        from app.api.v2.access_tokens.routes import bp as access_tokens_v2_bp
+        from app.api.v2.auth.routes import bp as auth_v2_bp
+        from app.api.v2.businesses.routes import bp as businesses_v2_bp
+        from app.api.v2.calls.routes import bp as calls_v2_bp
+        from app.api.v2.health.routes import bp as health_v2_bp
+        from app.api.v2.internal.routes import bp as internal_v2_bp
+        from app.api.v2.sip_trunks.routes import bp as sip_trunks_v2_bp
+
+        app.register_blueprint(health_v2_bp)
+        app.register_blueprint(calls_v2_bp)
+        app.register_blueprint(auth_v2_bp)
+        app.register_blueprint(access_tokens_v2_bp)
+        app.register_blueprint(businesses_v2_bp)
+        app.register_blueprint(sip_trunks_v2_bp)
+        app.register_blueprint(internal_v2_bp)
+
+
+def register_v1_deprecation_marker(app):
+    @app.after_request
+    def mark_v1_deprecated(response):
+        path = request.path or ""
+        if not path.startswith("/api/") or path.startswith("/api/v2/"):
+            return response
+
+        response.headers["X-API-Deprecated"] = "true"
+        response.headers["X-API-Deprecated-Message"] = "API v1 is deprecated. Use /api/v2/*"
+        if response.is_json:
+            payload = response.get_json(silent=True)
+            if isinstance(payload, dict):
+                payload.setdefault("deprecated", True)
+                payload.setdefault("deprecated_message", "API v1 is deprecated. Use /api/v2/*")
+                response.set_data(app.json.dumps(payload))
+        return response

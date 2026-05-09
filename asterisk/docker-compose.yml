@@ -52,6 +52,9 @@ services:
       - ../asterisk/manager.conf:/etc/asterisk/manager.conf
       - ../asterisk/ari.conf:/etc/asterisk/ari.conf
       - ../asterisk/realtime.conf:/etc/asterisk/realtime.conf
+      - ../asterisk/sorcery.conf:/etc/asterisk/sorcery.conf
+      - ../asterisk/extconfig.conf:/etc/asterisk/extconfig.conf
+      - ../asterisk/res_pgsql.conf:/etc/asterisk/res_pgsql.conf
       - ../storage/audio:/var/lib/asterisk/sounds/custom
       - ../storage/recordings:/var/spool/asterisk/monitor
     depends_on:

@@ -18,6 +18,8 @@ from app.middleware.permissions import (
     require_superuser,
 )
 from app.models import Business
+from app.models import WorkspaceMembership
+from app.services.user_workspace import get_primary_business_id
 
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 
@@ -87,8 +89,15 @@ def me():
     user = g.actor_user
 
     business = None
-    if user.role != "superuser" and user.business_id:
-        business = Business.query.get(user.business_id)
+    if user.role != "superuser":
+        membership = (
+            WorkspaceMembership.query.filter_by(user_id=user.id, status="active")
+            .order_by(WorkspaceMembership.joined_at.asc())
+            .first()
+        )
+        target_business_id = membership.business_id if membership is not None else get_primary_business_id(user.id)
+        if target_business_id:
+            business = Business.query.get(target_business_id)
         if business is None:
             return jsonify({"error": "Business not found"}), 404
 

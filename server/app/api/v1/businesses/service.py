@@ -4,6 +4,7 @@ from datetime import datetime
 from app.extensions import db
 from app.models import Business, User, WorkspaceMembership
 from app.services.audit_service import log_audit_event
+from app.services.user_workspace import get_primary_business_id
 
 
 VALID_BUSINESS_STATUSES = {"active", "inactive", "suspended", "deleted"}
@@ -55,14 +56,15 @@ def list_businesses(actor_user):
     if actor_user.role == "superuser":
         items = Business.query.order_by(Business.created_at.desc()).all()
     else:
-        if not actor_user.business_id:
+        actor_business_id = get_primary_business_id(actor_user.id)
+        if not actor_business_id:
             return None, "User business is not configured"
-        items = Business.query.filter_by(id=actor_user.business_id).all()
+        items = Business.query.filter_by(id=actor_business_id).all()
     return [serialize_business(item) for item in items], None
 
 
 def get_business(actor_user, business):
-    if actor_user.role != "superuser" and actor_user.business_id != business.id:
+    if actor_user.role != "superuser" and get_primary_business_id(actor_user.id) != business.id:
         return None, "Cross-business access denied"
     return serialize_business(business), None
 
@@ -107,7 +109,7 @@ def create_business(actor_user, payload):
 
 
 def update_business(actor_user, business, payload):
-    if actor_user.role != "superuser" and actor_user.business_id != business.id:
+    if actor_user.role != "superuser" and get_primary_business_id(actor_user.id) != business.id:
         return None, "Cross-business access denied"
 
     if "name" in payload:
@@ -144,7 +146,7 @@ def update_business(actor_user, business, payload):
 
 
 def soft_delete_business(actor_user, business):
-    if actor_user.role != "superuser" and actor_user.business_id != business.id:
+    if actor_user.role != "superuser" and get_primary_business_id(actor_user.id) != business.id:
         return None, "Cross-business access denied"
 
     business.status = "deleted"
@@ -162,13 +164,13 @@ def soft_delete_business(actor_user, business):
 
 
 def get_business_settings(actor_user, business):
-    if actor_user.role != "superuser" and actor_user.business_id != business.id:
+    if actor_user.role != "superuser" and get_primary_business_id(actor_user.id) != business.id:
         return None, "Cross-business access denied"
     return {"business_id": business.id, "settings": _serialize_settings(business.settings_json)}, None
 
 
 def update_business_settings(actor_user, business, payload):
-    if actor_user.role != "superuser" and actor_user.business_id != business.id:
+    if actor_user.role != "superuser" and get_primary_business_id(actor_user.id) != business.id:
         return None, "Cross-business access denied"
 
     settings = payload.get("settings")
@@ -223,8 +225,6 @@ def add_member(actor_user, business, payload):
     user = User.query.get(int(user_id))
     if user is None:
         return None, "User not found"
-    if user.business_id != business.id:
-        return None, "User does not belong to this business"
 
     exists = WorkspaceMembership.query.filter_by(
         business_id=business.id, user_id=user.id
@@ -332,8 +332,6 @@ def transfer_ownership(actor_user, business, payload):
     target_user = User.query.get(int(target_user_id))
     if target_user is None:
         return None, "Target user not found"
-    if target_user.business_id != business.id:
-        return None, "Target user does not belong to this business"
 
     target_membership = WorkspaceMembership.query.filter_by(
         business_id=business.id, user_id=target_user.id
@@ -350,7 +348,7 @@ def transfer_ownership(actor_user, business, payload):
 
     if previous_owner_id and previous_owner_id != target_user.id:
         prev_user = User.query.get(previous_owner_id)
-        if prev_user is not None and prev_user.business_id == business.id:
+        if prev_user is not None:
             prev_user.role = "admin"
             prev_membership = WorkspaceMembership.query.filter_by(
                 business_id=business.id, user_id=prev_user.id

@@ -45,12 +45,21 @@ class Config:
         os.getenv("BOOTSTRAP_SUPERUSER_ENABLED", "false").lower() == "true"
     )
     BOOTSTRAP_SUPERUSER_SECRET = os.getenv("BOOTSTRAP_SUPERUSER_SECRET", "")
+    AUTHZ_V2_ENABLED = os.getenv("AUTHZ_V2_ENABLED", "false").lower() == "true"
+    AUTHZ_V2_COMPARE_ENABLED = (
+        os.getenv("AUTHZ_V2_COMPARE_ENABLED", "false").lower() == "true"
+    )
 
     AMI_HOST = os.getenv("AMI_HOST", "dialyra-asterisk")
     AMI_PORT = int(os.getenv("AMI_PORT", "5038"))
     AMI_USERNAME = os.getenv("AMI_USERNAME", "admin")
     AMI_SECRET = os.getenv("AMI_SECRET", "dialyra123")
     AMI_TIMEOUT = float(os.getenv("AMI_TIMEOUT", "5"))
+    PJSIP_CONFIG_PATH = os.getenv("PJSIP_CONFIG_PATH", "/app/asterisk/pjsip.conf")
+    PJSIP_TRANSPORT_NAME = os.getenv("PJSIP_TRANSPORT_NAME", "transport-udp")
+    SIP_REALTIME_ENABLED = os.getenv("SIP_REALTIME_ENABLED", "false").lower() == "true"
+    SIP_REALTIME_DSN = os.getenv("SIP_REALTIME_DSN", "")
+    SIP_REALTIME_SCHEMA = os.getenv("SIP_REALTIME_SCHEMA", "public")
 
 
 class DevelopmentConfig(Config):

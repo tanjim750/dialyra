@@ -1,6 +1,6 @@
 import json
 
-from app.models import Business, User
+from app.models import Business, User, WorkspaceMembership
 
 
 def get_business_settings_dict(business):
@@ -36,7 +36,15 @@ def can_add_user_to_business(business_id):
     if max_users is None:
         return True, None
 
-    active_users_count = User.query.filter_by(business_id=business_id, status="active").count()
+    active_users_count = (
+        User.query.join(WorkspaceMembership, WorkspaceMembership.user_id == User.id)
+        .filter(
+            WorkspaceMembership.business_id == business_id,
+            WorkspaceMembership.status == "active",
+            User.status == "active",
+        )
+        .count()
+    )
     if active_users_count >= max_users:
         return False, "Business max_users limit reached"
 

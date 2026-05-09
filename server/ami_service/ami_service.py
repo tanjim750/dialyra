@@ -35,12 +35,19 @@ class AMIService:
         finally:
             sock.close()
 
-    def originate_call(self, phone_number):
+    def originate_call(self, phone_number, channel_variables=None):
         action_id = str(uuid.uuid4())
 
         print(
             f"Initiating call to {phone_number} via AMI at {self.host}:{self.port}..."
         )
+
+        variable_lines = ""
+        if channel_variables:
+            for key, value in channel_variables.items():
+                if value is None:
+                    continue
+                variable_lines += f"Variable: {key}={value}\r\n"
 
         action = (
             f"Action: Originate\r\n"
@@ -50,6 +57,7 @@ class AMIService:
             f"Exten: {phone_number}\r\n"
             f"Priority: 1\r\n"
             f"CallerID: Dialyra <1000>\r\n"
+            f"{variable_lines}"
             f"Async: true\r\n\r\n"
         )
 

@@ -3,11 +3,14 @@ import json
 from datetime import datetime
 from functools import wraps
 
-from flask import g, jsonify, request
+from flask import current_app, g, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app.extensions import db
 from app.models import Business, BusinessAccessToken, User
+from app.services.audit_service import log_audit_event
+from app.services.authz_resolver import get_active_membership, resolve_target_business_id
+from app.services.user_workspace import get_primary_business_id
 
 VALID_USER_STATUSES = {"active"}
 VALID_BUSINESS_STATUSES = {"active"}
@@ -38,6 +41,31 @@ ROLE_PERMISSIONS = {
     "viewer": {"businesses.read"},
 }
 
+V2_PLATFORM_PERMISSIONS = {
+    "superuser": {
+        "businesses.read",
+        "businesses.manage",
+        "settings.manage",
+        "access_tokens.manage",
+        "members.manage",
+        "users.create",
+    }
+}
+
+V2_MEMBERSHIP_PERMISSIONS = {
+    "admin": {
+        "businesses.read",
+        "businesses.manage",
+        "settings.manage",
+        "access_tokens.manage",
+        "members.manage",
+        "users.create",
+    },
+    "manager": {"businesses.read"},
+    "agent": {"businesses.read"},
+    "viewer": {"businesses.read"},
+}
+
 
 def _load_actor_user():
     actor_user = getattr(g, "actor_user", None)
@@ -54,6 +82,36 @@ def _load_actor_user():
     return actor_user
 
 
+def _is_compare_enabled():
+    return bool(current_app.config.get("AUTHZ_V2_COMPARE_ENABLED", False))
+
+
+def _safe_log_decision_diff(actor_user, check_name, legacy_allowed, v2_allowed, metadata=None):
+    if not _is_compare_enabled():
+        return
+    if legacy_allowed == v2_allowed:
+        return
+    try:
+        log_audit_event(
+            "authz.decision_diff",
+            business_id=get_primary_business_id(getattr(actor_user, "id", None))
+            if getattr(actor_user, "id", None)
+            else None,
+            actor_user_id=getattr(actor_user, "id", None),
+            metadata={
+                "check": check_name,
+                "legacy_allowed": legacy_allowed,
+                "v2_allowed": v2_allowed,
+                "path": request.path,
+                "method": request.method,
+                **(metadata or {}),
+            },
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
 def jwt_context_required(fn):
     @jwt_required()
     @wraps(fn)
@@ -68,9 +126,10 @@ def jwt_context_required(fn):
         g.actor_business = None
 
         if actor_user.role != "superuser":
-            if not actor_user.business_id:
+            actor_business_id = get_primary_business_id(actor_user.id)
+            if not actor_business_id:
                 return jsonify({"error": "User business is not configured"}), 403
-            business = Business.query.get(actor_user.business_id)
+            business = Business.query.get(actor_business_id)
             if business is None:
                 return jsonify({"error": "Business not found"}), 404
             if business.status not in VALID_BUSINESS_STATUSES:
@@ -108,7 +167,28 @@ def require_permission(permission):
             if actor_user is None:
                 return jsonify({"error": "Actor user not found"}), 404
             allowed = ROLE_PERMISSIONS.get(actor_user.role, set())
-            if permission not in allowed:
+            legacy_allowed = permission in allowed
+
+            v2_allowed = False
+            if actor_user.role == "superuser":
+                v2_allowed = permission in V2_PLATFORM_PERMISSIONS.get("superuser", set())
+            else:
+                target_business_id = resolve_target_business_id(
+                    default_business_id=get_primary_business_id(actor_user.id)
+                )
+                membership = get_active_membership(actor_user.id, target_business_id)
+                if membership is not None:
+                    v2_allowed = permission in V2_MEMBERSHIP_PERMISSIONS.get(membership.role, set())
+
+            _safe_log_decision_diff(
+                actor_user,
+                "require_permission",
+                legacy_allowed,
+                v2_allowed,
+                metadata={"permission": permission},
+            )
+
+            if not legacy_allowed:
                 return jsonify({"error": "Insufficient permission"}), 403
             return fn(*args, **kwargs)
 
@@ -216,7 +296,10 @@ def require_stuff_or_superuser(fn):
         actor_user = _load_actor_user()
         if actor_user is None:
             return jsonify({"error": "Actor user not found"}), 404
-        if actor_user.role not in {"superuser", "owner", "admin"}:
+        legacy_allowed = actor_user.role in {"superuser", "owner", "admin"}
+        v2_allowed = actor_user.role in {"superuser", "stuff"}
+        _safe_log_decision_diff(actor_user, "require_stuff_or_superuser", legacy_allowed, v2_allowed)
+        if not legacy_allowed:
             return jsonify({"error": "Owner/Admin or superuser role required"}), 403
         return fn(*args, **kwargs)
 
@@ -233,9 +316,6 @@ def require_same_business(payload_key="business_id"):
             if actor_user.role == "superuser":
                 return fn(*args, **kwargs)
 
-            if actor_user.role not in {"owner", "admin"}:
-                return jsonify({"error": "Same-business permission denied"}), 403
-
             payload = request.get_json(silent=True) or {}
             target_business_id = payload.get(payload_key)
             if target_business_id is None:
@@ -246,7 +326,20 @@ def require_same_business(payload_key="business_id"):
             except (TypeError, ValueError):
                 return jsonify({"error": "Invalid business_id"}), 400
 
-            if actor_user.business_id != normalized_target:
+            legacy_allowed = (
+                actor_user.role in {"owner", "admin"}
+                and get_primary_business_id(actor_user.id) == normalized_target
+            )
+            v2_allowed = get_active_membership(actor_user.id, normalized_target) is not None
+            _safe_log_decision_diff(
+                actor_user,
+                "require_same_business",
+                legacy_allowed,
+                v2_allowed,
+                metadata={"target_business_id": normalized_target},
+            )
+
+            if not legacy_allowed:
                 return jsonify({"error": "Cross-business access denied"}), 403
 
             return fn(*args, **kwargs)
@@ -262,7 +355,7 @@ def assert_same_business(resource_business_id):
         return jsonify({"error": "Actor user not found"}), 404
     if actor_user.role == "superuser":
         return None
-    if actor_user.business_id != resource_business_id:
+    if get_primary_business_id(actor_user.id) != resource_business_id:
         return jsonify({"error": "Cross-business access denied"}), 403
     return None
 
@@ -290,8 +383,18 @@ def require_business_access(param_name="business_id"):
             if business.status not in VALID_BUSINESS_STATUSES:
                 return jsonify({"error": "Business is not active"}), 403
 
-            if actor_user.role != "superuser" and actor_user.business_id != business_id:
-                return jsonify({"error": "Cross-business access denied"}), 403
+            if actor_user.role != "superuser":
+                legacy_allowed = get_primary_business_id(actor_user.id) == business_id
+                v2_allowed = get_active_membership(actor_user.id, business_id) is not None
+                _safe_log_decision_diff(
+                    actor_user,
+                    "require_business_access",
+                    legacy_allowed,
+                    v2_allowed,
+                    metadata={"target_business_id": business_id},
+                )
+                if not legacy_allowed:
+                    return jsonify({"error": "Cross-business access denied"}), 403
 
             g.target_business = business
             return fn(*args, **kwargs)

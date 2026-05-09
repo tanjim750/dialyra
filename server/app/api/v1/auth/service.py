@@ -11,6 +11,7 @@ from app.extensions import db
 from app.models import Business, RefreshToken, User, WorkspaceMembership
 from app.services.business_limits import can_add_user_to_business
 from app.services.audit_service import log_audit_event
+from app.services.user_workspace import get_primary_business_id
 
 
 WORKSPACE_ROLES = {"owner", "admin", "manager", "agent", "viewer"}
@@ -72,8 +73,9 @@ def _create_refresh_token(user):
 
 
 def _build_access_token(user):
+    business_id = get_primary_business_id(user.id)
     claims = {
-        "business_id": user.business_id,
+        "business_id": business_id,
         "role": user.role,
         "auth_type": "jwt",
     }
@@ -122,7 +124,6 @@ def serialize_business(business):
 def serialize_user(user):
     return {
         "id": user.id,
-        "business_id": user.business_id,
         "full_name": user.full_name,
         "email": user.email,
         "role": user.role,
@@ -163,7 +164,6 @@ def register_owner(payload):
     db.session.flush()
 
     user = User(
-        business_id=business.id,
         full_name=owner_name,
         email=email,
         password_hash=generate_password_hash(password),
@@ -220,7 +220,6 @@ def bootstrap_superuser(payload):
     system_business = _get_or_create_system_business()
 
     user = User(
-        business_id=system_business.id,
         full_name=full_name,
         email=email,
         password_hash=generate_password_hash(password),
@@ -268,9 +267,10 @@ def login_user(payload):
 
     business = None
     if user.role != "superuser":
-        if not user.business_id:
+        target_business_id = get_primary_business_id(user.id)
+        if target_business_id is None:
             return None, "User business is not configured"
-        business = Business.query.get(user.business_id)
+        business = Business.query.get(target_business_id)
         if business is None or business.status not in VALID_BUSINESS_STATUSES:
             return None, "Business account is not active"
 
@@ -283,7 +283,7 @@ def login_user(payload):
     FAILED_LOGIN_ATTEMPTS.pop(email, None)
     log_audit_event(
         "auth.login",
-        business_id=user.business_id,
+        business_id=business.id if business else None,
         actor_user_id=user.id,
         metadata={"role": user.role},
     )
@@ -344,7 +344,7 @@ def logout_session(raw_refresh_token):
         db.session.commit()
         log_audit_event(
             "auth.logout",
-            business_id=token.user.business_id if token.user else None,
+            business_id=get_primary_business_id(token.user_id) if token.user_id else None,
             actor_user_id=token.user_id,
         )
         db.session.commit()
@@ -381,14 +381,14 @@ def create_user_by_actor(actor_user, payload):
     elif actor_user.role in {"owner", "admin"}:
         if role in {"superuser", "owner"}:
             return None, "Owner/Admin cannot create superuser or owner"
-        if not actor_user.business_id:
+        actor_business_id = get_primary_business_id(actor_user.id)
+        if not actor_business_id:
             return None, "Owner/Admin account has no business"
-        business_id = actor_user.business_id
+        business_id = actor_business_id
     else:
         return None, "Only superuser, owner or admin can create users"
 
     user = User(
-        business_id=business_id,
         full_name=full_name,
         email=email,
         password_hash=generate_password_hash(password),
@@ -413,7 +413,7 @@ def create_user_by_actor(actor_user, payload):
     db.session.commit()
     log_audit_event(
         "auth.user_created",
-        business_id=user.business_id,
+        business_id=business_id,
         actor_user_id=actor_user.id,
         metadata={"created_user_id": user.id, "role": user.role},
     )

@@ -8,6 +8,7 @@ from flask import current_app
 from app.extensions import db
 from app.models import Business, BusinessAccessToken
 from app.services.audit_service import log_audit_event
+from app.services.user_workspace import get_primary_business_id
 
 TOKEN_PREFIX = "dialyra_live_"
 DEFAULT_TOKEN_EXPIRY_DAYS = 365
@@ -83,9 +84,10 @@ def _resolve_target_business(actor_user, business_id):
         return business, None
 
     if actor_user.role == "stuff":
-        if not actor_user.business_id:
+        actor_business_id = get_primary_business_id(actor_user.id)
+        if not actor_business_id:
             return None, "Stuff account has no business"
-        business = Business.query.get(actor_user.business_id)
+        business = Business.query.get(actor_business_id)
         if business is None:
             return None, "Business not found"
         if business_id and int(business_id) != business.id:
@@ -160,10 +162,11 @@ def list_access_tokens(actor_user, business_id=None):
         if business_id:
             query = query.filter_by(business_id=int(business_id))
     elif actor_user.role == "stuff":
-        if not actor_user.business_id:
+        actor_business_id = get_primary_business_id(actor_user.id)
+        if not actor_business_id:
             return None, "Stuff account has no business"
-        query = query.filter_by(business_id=actor_user.business_id)
-        if business_id and int(business_id) != actor_user.business_id:
+        query = query.filter_by(business_id=actor_business_id)
+        if business_id and int(business_id) != actor_business_id:
             return None, "Cross-business access denied"
     else:
         return None, "Only superuser or stuff can view access tokens"
@@ -177,7 +180,7 @@ def get_access_token(actor_user, token_id):
     if token_model is None:
         return None, "Access token not found"
 
-    if actor_user.role == "stuff" and token_model.business_id != actor_user.business_id:
+    if actor_user.role == "stuff" and token_model.business_id != get_primary_business_id(actor_user.id):
         return None, "Cross-business access denied"
     if actor_user.role not in {"superuser", "stuff"}:
         return None, "Only superuser or stuff can view access tokens"
@@ -190,7 +193,7 @@ def revoke_access_token(actor_user, token_id):
     if token_model is None:
         return None, "Access token not found"
 
-    if actor_user.role == "stuff" and token_model.business_id != actor_user.business_id:
+    if actor_user.role == "stuff" and token_model.business_id != get_primary_business_id(actor_user.id):
         return None, "Cross-business access denied"
     if actor_user.role not in {"superuser", "stuff"}:
         return None, "Only superuser or stuff can revoke access tokens"
@@ -214,7 +217,7 @@ def delete_access_token(actor_user, token_id):
     if token_model is None:
         return None, "Access token not found"
 
-    if actor_user.role == "stuff" and token_model.business_id != actor_user.business_id:
+    if actor_user.role == "stuff" and token_model.business_id != get_primary_business_id(actor_user.id):
         return None, "Cross-business access denied"
     if actor_user.role not in {"superuser", "stuff"}:
         return None, "Only superuser or stuff can delete access tokens"
