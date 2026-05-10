@@ -8,11 +8,14 @@ from app.services.call_reconciliation import reconcile_call_logs_from_cdr
 from scripts import (
     migrate_business_owner_user_id,
     migrate_business_schema,
+    migrate_audio_assets,
     migrate_call_logs,
     migrate_drop_user_business_id,
     migrate_roles,
+    migrate_flow_engine,
     migrate_sip_realtime,
     migrate_sip_trunks,
+    migrate_tts_requests,
 )
 
 
@@ -168,6 +171,24 @@ def register_cli_commands(app):
         migrate_call_logs.ensure_indexes()
         migrate_call_logs.ensure_constraints()
         click.echo("  apply: call_logs schema step completed.")
+        click.echo("\n== Step 6: audio_assets schema ==")
+        migrate_audio_assets.apply_schema()
+        migrate_audio_assets.ensure_fk()
+        migrate_audio_assets.ensure_indexes()
+        migrate_audio_assets.ensure_constraints()
+        click.echo("  apply: audio_assets schema step completed.")
+        click.echo("\n== Step 7: tts_requests schema ==")
+        migrate_tts_requests.apply_schema()
+        migrate_tts_requests.ensure_fk()
+        migrate_tts_requests.ensure_indexes()
+        migrate_tts_requests.ensure_constraints()
+        click.echo("  apply: tts_requests schema step completed.")
+        click.echo("\n== Step 8: flow_engine schema ==")
+        migrate_flow_engine.apply_schema()
+        migrate_flow_engine.ensure_fk()
+        migrate_flow_engine.ensure_indexes()
+        migrate_flow_engine.ensure_constraints()
+        click.echo("  apply: flow_engine schema step completed.")
         click.echo("\nApply mode: all migration steps completed successfully.")
 
     @migrate_group.command("drop-user-business-id")
@@ -242,6 +263,63 @@ def register_cli_commands(app):
         migrate_call_logs.ensure_indexes()
         migrate_call_logs.ensure_constraints()
         click.echo("\nApply mode: call_logs schema updated successfully.")
+
+    @migrate_group.command("audio-assets")
+    @click.option("--apply", is_flag=True, default=False, help="Apply changes")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
+    def migrate_audio_assets_cmd(apply, dry_run):
+        effective_dry_run = (not apply) or dry_run
+        exists = migrate_audio_assets.table_exists()
+        columns = migrate_audio_assets.list_columns() if exists else set()
+        click.echo("Audio assets schema check:")
+        click.echo(f"  table_exists: {exists}")
+        click.echo(f"  columns: {len(columns)}")
+        if effective_dry_run:
+            click.echo("\nDry-run mode: no changes written.")
+            return
+        migrate_audio_assets.apply_schema()
+        migrate_audio_assets.ensure_fk()
+        migrate_audio_assets.ensure_indexes()
+        migrate_audio_assets.ensure_constraints()
+        click.echo("\nApply mode: audio_assets schema updated successfully.")
+
+    @migrate_group.command("tts-requests")
+    @click.option("--apply", is_flag=True, default=False, help="Apply changes")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
+    def migrate_tts_requests_cmd(apply, dry_run):
+        effective_dry_run = (not apply) or dry_run
+        exists = migrate_tts_requests.table_exists()
+        columns = migrate_tts_requests.list_columns() if exists else set()
+        click.echo("TTS requests schema check:")
+        click.echo(f"  table_exists: {exists}")
+        click.echo(f"  columns: {len(columns)}")
+        if effective_dry_run:
+            click.echo("\nDry-run mode: no changes written.")
+            return
+        migrate_tts_requests.apply_schema()
+        migrate_tts_requests.ensure_fk()
+        migrate_tts_requests.ensure_indexes()
+        migrate_tts_requests.ensure_constraints()
+        click.echo("\nApply mode: tts_requests schema updated successfully.")
+
+    @migrate_group.command("flow-engine")
+    @click.option("--apply", is_flag=True, default=False, help="Apply changes")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
+    def migrate_flow_engine_cmd(apply, dry_run):
+        effective_dry_run = (not apply) or dry_run
+        existing = migrate_flow_engine.existing_tables()
+        missing = sorted(migrate_flow_engine.FLOW_TABLES - existing)
+        click.echo("Flow engine schema check:")
+        click.echo(f"  existing_tables: {sorted(existing)}")
+        click.echo(f"  missing_tables: {missing}")
+        if effective_dry_run:
+            click.echo("\nDry-run mode: no changes written.")
+            return
+        migrate_flow_engine.apply_schema()
+        migrate_flow_engine.ensure_fk()
+        migrate_flow_engine.ensure_indexes()
+        migrate_flow_engine.ensure_constraints()
+        click.echo("\nApply mode: flow engine schema updated successfully.")
 
     @sip_group.command("init-realtime")
     @click.option("--apply", is_flag=True, default=False, help="Apply changes")

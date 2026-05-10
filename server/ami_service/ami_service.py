@@ -96,3 +96,23 @@ class AMIService:
         )
 
         return self._send(action)
+
+    def originate_application_playback(
+        self,
+        channel,
+        playback_target,
+        *,
+        action_id=None,
+        timeout_ms=10000,
+    ):
+        action_id = action_id or str(uuid.uuid4())
+        action = (
+            f"Action: Originate\r\n"
+            f"ActionID: {action_id}\r\n"
+            f"Channel: {channel}\r\n"
+            f"Application: Playback\r\n"
+            f"Data: {playback_target}\r\n"
+            f"Timeout: {int(timeout_ms)}\r\n"
+            f"Async: true\r\n\r\n"
+        )
+        return self._send(action)

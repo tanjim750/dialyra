@@ -9,6 +9,7 @@ from app.extensions import db, init_extensions
 from app.middleware.error_handlers import register_error_handlers
 from app.middleware.request_id import register_request_id_middleware
 from app.services.ami_event_listener import start_ami_event_listener
+from app.api.v2.tts.worker_service import start_tts_worker
 from app.utils.logging import configure_logging
 
 
@@ -34,6 +35,7 @@ def create_app(config_name=None):
         db.create_all()
 
     start_ami_event_listener(app)
+    start_tts_worker(app)
 
     return app
 
@@ -56,18 +58,24 @@ def register_blueprints(app):
     if app.config.get("AUTHZ_V2_ENABLED", False):
         from app.api.v2.access_tokens.routes import bp as access_tokens_v2_bp
         from app.api.v2.auth.routes import bp as auth_v2_bp
+        from app.api.v2.audio_assets.routes import bp as audio_assets_v2_bp
         from app.api.v2.businesses.routes import bp as businesses_v2_bp
         from app.api.v2.calls.routes import bp as calls_v2_bp
+        from app.api.v2.flows.routes import bp as flows_v2_bp
         from app.api.v2.health.routes import bp as health_v2_bp
         from app.api.v2.internal.routes import bp as internal_v2_bp
         from app.api.v2.sip_trunks.routes import bp as sip_trunks_v2_bp
+        from app.api.v2.tts.routes import bp as tts_v2_bp
 
         app.register_blueprint(health_v2_bp)
         app.register_blueprint(calls_v2_bp)
         app.register_blueprint(auth_v2_bp)
+        app.register_blueprint(audio_assets_v2_bp)
         app.register_blueprint(access_tokens_v2_bp)
         app.register_blueprint(businesses_v2_bp)
+        app.register_blueprint(flows_v2_bp)
         app.register_blueprint(sip_trunks_v2_bp)
+        app.register_blueprint(tts_v2_bp)
         app.register_blueprint(internal_v2_bp)
 
 

@@ -61,11 +61,69 @@ class Config:
     AMI_EVENT_RECONNECT_DELAY_SEC = float(
         os.getenv("AMI_EVENT_RECONNECT_DELAY_SEC", "2")
     )
+    AUDIO_PLAYBACK_TEST_CHANNEL = os.getenv("AUDIO_PLAYBACK_TEST_CHANNEL", "")
+    AUDIO_PLAYBACK_TEST_TIMEOUT_MS = int(os.getenv("AUDIO_PLAYBACK_TEST_TIMEOUT_MS", "10000"))
     PJSIP_CONFIG_PATH = os.getenv("PJSIP_CONFIG_PATH", "/app/asterisk/pjsip.conf")
     PJSIP_TRANSPORT_NAME = os.getenv("PJSIP_TRANSPORT_NAME", "transport-udp")
     SIP_REALTIME_ENABLED = os.getenv("SIP_REALTIME_ENABLED", "false").lower() == "true"
     SIP_REALTIME_DSN = os.getenv("SIP_REALTIME_DSN", "")
     SIP_REALTIME_SCHEMA = os.getenv("SIP_REALTIME_SCHEMA", "public")
+    AUDIO_ASSETS_ROOT = os.getenv("AUDIO_ASSETS_ROOT", "/data/audio-assets")
+    AUDIO_ASSET_EXTRA_CATEGORIES = os.getenv("AUDIO_ASSET_EXTRA_CATEGORIES", "")
+    AUDIO_ASSET_MAX_FILE_SIZE_MB = int(os.getenv("AUDIO_ASSET_MAX_FILE_SIZE_MB", "20"))
+    AUDIO_ASSET_ENFORCE_MIME = os.getenv("AUDIO_ASSET_ENFORCE_MIME", "true").lower() == "true"
+    AUDIO_ASSET_ALLOWED_EXTENSIONS = os.getenv(
+        "AUDIO_ASSET_ALLOWED_EXTENSIONS", "wav,gsm,ulaw,alaw,mp3"
+    )
+    TTS_DEFAULT_PROVIDER = os.getenv("TTS_DEFAULT_PROVIDER", "mock")
+    TTS_ENABLED_PROVIDERS = os.getenv(
+        "TTS_ENABLED_PROVIDERS", "mock,openai,google,amazon_polly,azure,elevenlabs,coqui,piper"
+    )
+    TTS_ASYNC_ENABLED = os.getenv("TTS_ASYNC_ENABLED", "false").lower() == "true"
+    TTS_PROVIDER_TIMEOUT_SEC = float(os.getenv("TTS_PROVIDER_TIMEOUT_SEC", "20"))
+    GOOGLE_TTS_API_KEY = os.getenv("GOOGLE_TTS_API_KEY", "")
+    GOOGLE_TTS_ENDPOINT = os.getenv(
+        "GOOGLE_TTS_ENDPOINT", "https://texttospeech.googleapis.com/v1/text:synthesize"
+    )
+    GOOGLE_TTS_VARIANT = os.getenv("GOOGLE_TTS_VARIANT", "gemini-tts")
+    GOOGLE_GEMINI_TTS_MODEL = os.getenv("GOOGLE_GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+    GOOGLE_GEMINI_TTS_ENDPOINT = os.getenv("GOOGLE_GEMINI_TTS_ENDPOINT", "")
+    GOOGLE_GEMINI_TTS_SAMPLE_RATE = int(os.getenv("GOOGLE_GEMINI_TTS_SAMPLE_RATE", "24000"))
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_TTS_ENDPOINT = os.getenv("OPENAI_TTS_ENDPOINT", "https://api.openai.com/v1/audio/speech")
+    OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+    OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "alloy")
+    ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+    ELEVENLABS_TTS_BASE_URL = os.getenv("ELEVENLABS_TTS_BASE_URL", "https://api.elevenlabs.io")
+    ELEVENLABS_TTS_VOICE_ID = os.getenv("ELEVENLABS_TTS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+    ELEVENLABS_TTS_MODEL_ID = os.getenv("ELEVENLABS_TTS_MODEL_ID", "eleven_multilingual_v2")
+    ELEVENLABS_TTS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_TTS_OUTPUT_FORMAT", "pcm_16000")
+    FLOW_RUNTIME_CANARY_ENABLED = (
+        os.getenv("FLOW_RUNTIME_CANARY_ENABLED", "false").lower() == "true"
+    )
+    FLOW_RUNTIME_CANARY_PERCENT = int(os.getenv("FLOW_RUNTIME_CANARY_PERCENT", "100"))
+    FLOW_RUNTIME_CANARY_FORCE_BUSINESS_IDS = os.getenv(
+        "FLOW_RUNTIME_CANARY_FORCE_BUSINESS_IDS", ""
+    )
+    FLOW_RUNTIME_CANARY_FORCE_FLOW_IDS = os.getenv(
+        "FLOW_RUNTIME_CANARY_FORCE_FLOW_IDS", ""
+    )
+    # Optional comma-separated allowlist of runtime node types for phased rollout.
+    # Empty means all implemented node types are allowed.
+    FLOW_RUNTIME_ENABLED_NODE_TYPES = os.getenv("FLOW_RUNTIME_ENABLED_NODE_TYPES", "")
+    # Optional granular per-node flags. When set, these override allowlist behavior.
+    FLOW_RUNTIME_ENABLE_PLAY_AUDIO = os.getenv("FLOW_RUNTIME_ENABLE_PLAY_AUDIO", "").lower()
+    FLOW_RUNTIME_ENABLE_SAY_TEXT = os.getenv("FLOW_RUNTIME_ENABLE_SAY_TEXT", "").lower()
+    FLOW_RUNTIME_ENABLE_TTS = os.getenv("FLOW_RUNTIME_ENABLE_TTS", "").lower()
+    FLOW_RUNTIME_ENABLE_GATHER_INPUT = os.getenv("FLOW_RUNTIME_ENABLE_GATHER_INPUT", "").lower()
+    FLOW_RUNTIME_ENABLE_CONDITION = os.getenv("FLOW_RUNTIME_ENABLE_CONDITION", "").lower()
+    FLOW_RUNTIME_ENABLE_SET_VARIABLE = os.getenv("FLOW_RUNTIME_ENABLE_SET_VARIABLE", "").lower()
+    FLOW_RUNTIME_ENABLE_GOTO = os.getenv("FLOW_RUNTIME_ENABLE_GOTO", "").lower()
+    FLOW_RUNTIME_ENABLE_WEBHOOK = os.getenv("FLOW_RUNTIME_ENABLE_WEBHOOK", "").lower()
+    FLOW_RUNTIME_ENABLE_TRANSFER_CALL = os.getenv("FLOW_RUNTIME_ENABLE_TRANSFER_CALL", "").lower()
+    FLOW_RUNTIME_ENABLE_WAIT = os.getenv("FLOW_RUNTIME_ENABLE_WAIT", "").lower()
+    FLOW_RUNTIME_ENABLE_RECORD_CONTROL = os.getenv("FLOW_RUNTIME_ENABLE_RECORD_CONTROL", "").lower()
+    FLOW_RUNTIME_ENABLE_HANGUP = os.getenv("FLOW_RUNTIME_ENABLE_HANGUP", "").lower()
 
 
 class DevelopmentConfig(Config):
