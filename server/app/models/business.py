@@ -26,6 +26,7 @@ class Business(db.Model):
     status = db.Column(db.String(20), nullable=False, default="active")
     logo_path = db.Column(db.String(500), nullable=True)
     settings_json = db.Column(db.Text, nullable=True)
+    allow_global_sip_fallback = db.Column(db.Boolean, nullable=False, default=False)
     deleted_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(

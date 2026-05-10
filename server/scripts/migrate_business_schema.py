@@ -30,6 +30,7 @@ REQUIRED_COLUMNS = {
     "country": "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS country VARCHAR(100)",
     "logo_path": "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS logo_path VARCHAR(500)",
     "settings_json": "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS settings_json TEXT",
+    "allow_global_sip_fallback": "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS allow_global_sip_fallback BOOLEAN NOT NULL DEFAULT FALSE",
     "deleted_at": "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL",
 }
 

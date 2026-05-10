@@ -63,7 +63,8 @@ def apply_schema():
             """
             CREATE TABLE IF NOT EXISTS sip_trunks (
                 id SERIAL PRIMARY KEY,
-                business_id INTEGER NOT NULL,
+                business_id INTEGER NULL,
+                scope VARCHAR(20) NOT NULL DEFAULT 'business',
                 name VARCHAR(255) NOT NULL,
                 provider_name VARCHAR(255),
                 type VARCHAR(20) NOT NULL DEFAULT 'registration',
@@ -89,6 +90,14 @@ def apply_schema():
     db.session.commit()
 
     # FK is handled idempotently in ensure_fk().
+    db.session.execute(
+        text(
+            "ALTER TABLE sip_trunks ADD COLUMN IF NOT EXISTS scope VARCHAR(20) NOT NULL DEFAULT 'business'"
+        )
+    )
+    db.session.execute(
+        text("ALTER TABLE sip_trunks ALTER COLUMN business_id DROP NOT NULL")
+    )
     db.session.execute(
         text(
             "ALTER TABLE sip_trunks ADD COLUMN IF NOT EXISTS apply_status VARCHAR(20) NOT NULL DEFAULT 'pending'"
@@ -121,6 +130,14 @@ def ensure_indexes_and_constraints():
     db.session.commit()
 
     checks = [
+        (
+            "ck_sip_trunks_scope",
+            "CHECK (scope IN ('business','global'))",
+        ),
+        (
+            "ck_sip_trunks_scope_business_id",
+            "CHECK ((scope='global' AND business_id IS NULL) OR (scope='business' AND business_id IS NOT NULL))",
+        ),
         (
             "ck_sip_trunks_type",
             "CHECK (type IN ('registration','ip'))",

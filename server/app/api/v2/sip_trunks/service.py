@@ -1,4 +1,5 @@
 import json
+import re
 import socket
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from app.api.v2.sip_trunks.realtime_sync import (
 )
 from app.extensions import db
 from app.models import Business, SipTrunk, WorkspaceMembership
+from app.services.asterisk_channels import count_active_calls_for_endpoint
 from app.services.ami_service import AMIService
 from app.services.audit_service import log_audit_event
 
@@ -27,6 +29,18 @@ STATUS_TYPES = {"active", "inactive", "failed", "registering", "rejected", "unre
 MANAGE_ROLES = {"owner", "admin"}
 VIEW_ROLES = {"owner", "admin", "manager", "agent", "viewer"}
 RUNTIME_SOCKET_TIMEOUT = 3.0
+
+
+def _slug(value):
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value or "").strip("-").lower()
+    return normalized or "trunk"
+
+
+def _trunk_endpoint_name(trunk, realtime_enabled):
+    business_part = trunk.business_id if trunk.business_id is not None else "global"
+    if realtime_enabled:
+        return f"dialyra_b{business_part}_t{trunk.id}_{_slug(trunk.name)}_ep"
+    return f"dialyra-b{business_part}-t{trunk.id}-{_slug(trunk.name)}-endpoint"
 
 
 def _secret_serializer():
@@ -60,6 +74,7 @@ def serialize_trunk(trunk):
             settings = {}
     return {
         "id": trunk.id,
+        "scope": trunk.scope,
         "business_id": trunk.business_id,
         "name": trunk.name,
         "provider_name": trunk.provider_name,
@@ -156,6 +171,7 @@ def _can_view_business(actor_user, business):
 
 
 def _validate_payload(payload, is_update=False):
+    scope = (payload.get("scope") or "").strip().lower()
     trunk_type = (payload.get("type") or "").strip().lower()
     auth_type = (payload.get("auth_type") or "").strip().lower()
     transport = (payload.get("transport") or "").strip().lower()
@@ -165,6 +181,8 @@ def _validate_payload(payload, is_update=False):
         if not payload.get("name") or not payload.get("host") or not trunk_type:
             return "Missing required fields: name, host, type"
 
+    if scope and scope not in {"business", "global"}:
+        return "Invalid scope"
     if trunk_type and trunk_type not in TRUNK_TYPES:
         return "Invalid trunk type"
     if auth_type and auth_type not in AUTH_TYPES:
@@ -182,26 +200,42 @@ def _validate_payload(payload, is_update=False):
 
 
 def create_sip_trunk(actor_user, payload):
+    explicit_scope = (payload.get("scope") or "").strip().lower() or None
+    scope = None
+    business = None
     business_id = payload.get("business_id")
-    if not business_id:
-        return None, "business_id is required"
-    business = Business.query.get(int(business_id))
-    if business is None:
-        return None, "Business not found"
-    if not _can_manage_business(actor_user, business):
-        return None, "Insufficient permission for this business"
+
+    # Dynamic scope inference:
+    # - superuser with no business_id => global
+    # - everyone else => business (business_id required)
+    if actor_user.role == "superuser" and not business_id:
+        scope = "global"
+        business_id = None
+    else:
+        scope = "business"
+        if not business_id:
+            return None, "business_id is required"
+        business = Business.query.get(int(business_id))
+        if business is None:
+            return None, "Business not found"
+        if not _can_manage_business(actor_user, business):
+            return None, "Insufficient permission for this business"
+
+    if explicit_scope and explicit_scope != scope:
+        return None, f"scope must be '{scope}' for this request"
 
     error = _validate_payload(payload, is_update=False)
     if error:
         return None, error
 
     name = payload.get("name").strip()
-    exists = SipTrunk.query.filter_by(business_id=business.id, name=name).first()
+    exists = SipTrunk.query.filter_by(business_id=business.id if business else None, name=name).first()
     if exists is not None:
         return None, "SIP trunk name already exists in this business"
 
     trunk = SipTrunk(
-        business_id=business.id,
+        business_id=business.id if business else None,
+        scope=scope,
         name=name,
         provider_name=(payload.get("provider_name") or "").strip() or None,
         type=(payload.get("type") or "registration").strip().lower(),
@@ -229,7 +263,7 @@ def create_sip_trunk(actor_user, payload):
         return None, "SIP trunk name already exists in this business"
     log_audit_event(
         "sip_trunk.created",
-        business_id=business.id,
+        business_id=business.id if business else None,
         actor_user_id=actor_user.id,
         metadata={"sip_trunk_id": trunk.id, "name": trunk.name},
     )
@@ -245,7 +279,9 @@ def list_sip_trunks(actor_user, business_id=None):
             return None, "Business not found"
         if not _can_view_business(actor_user, business):
             return None, "Insufficient permission for this business"
-        query = query.filter_by(business_id=business.id)
+        query = query.filter(SipTrunk.business_id == business.id)
+        if business.allow_global_sip_fallback:
+            query = query.union(SipTrunk.query.filter(SipTrunk.scope == "global"))
     elif actor_user.role != "superuser":
         owned_ids = [b.id for b in Business.query.filter_by(owner_user_id=actor_user.id).all()]
         member_ids = [
@@ -255,7 +291,7 @@ def list_sip_trunks(actor_user, business_id=None):
         allowed_ids = sorted(set(owned_ids + member_ids))
         if not allowed_ids:
             return [], None
-        query = query.filter(SipTrunk.business_id.in_(allowed_ids))
+        query = query.filter(SipTrunk.business_id.in_(allowed_ids), SipTrunk.scope == "business")
     trunks = query.order_by(SipTrunk.created_at.desc()).all()
     return [serialize_trunk(t) for t in trunks], None
 
@@ -264,6 +300,10 @@ def get_sip_trunk(actor_user, trunk_id):
     trunk = SipTrunk.query.get(trunk_id)
     if trunk is None:
         return None, "SIP trunk not found"
+    if trunk.scope == "global":
+        if actor_user.role != "superuser":
+            return None, "Insufficient permission for this business"
+        return serialize_trunk(trunk), None
     business = Business.query.get(trunk.business_id)
     if business is None:
         return None, "Business not found"
@@ -276,11 +316,15 @@ def update_sip_trunk(actor_user, trunk_id, payload):
     trunk = SipTrunk.query.get(trunk_id)
     if trunk is None:
         return None, "SIP trunk not found"
-    business = Business.query.get(trunk.business_id)
-    if business is None:
-        return None, "Business not found"
-    if not _can_manage_business(actor_user, business):
-        return None, "Insufficient permission for this business"
+    business = Business.query.get(trunk.business_id) if trunk.business_id else None
+    if trunk.scope == "global":
+        if actor_user.role != "superuser":
+            return None, "Only superuser can manage global SIP trunks"
+    else:
+        if business is None:
+            return None, "Business not found"
+        if not _can_manage_business(actor_user, business):
+            return None, "Insufficient permission for this business"
     error = _validate_payload(payload, is_update=True)
     if error:
         return None, error
@@ -289,7 +333,7 @@ def update_sip_trunk(actor_user, trunk_id, payload):
     if "name" in payload and payload.get("name"):
         normalized_name = payload.get("name").strip()
         duplicate = SipTrunk.query.filter(
-            SipTrunk.business_id == trunk.business_id,
+            SipTrunk.business_id.is_(trunk.business_id),
             SipTrunk.name == normalized_name,
             SipTrunk.id != trunk.id,
         ).first()
@@ -328,7 +372,7 @@ def update_sip_trunk(actor_user, trunk_id, payload):
         return None, "SIP trunk name already exists in this business"
     log_audit_event(
         "sip_trunk.updated",
-        business_id=business.id,
+        business_id=business.id if business else None,
         actor_user_id=actor_user.id,
         metadata={"sip_trunk_id": trunk.id},
     )
@@ -340,11 +384,15 @@ def delete_sip_trunk(actor_user, trunk_id):
     trunk = SipTrunk.query.get(trunk_id)
     if trunk is None:
         return None, "SIP trunk not found"
-    business = Business.query.get(trunk.business_id)
-    if business is None:
-        return None, "Business not found"
-    if not _can_manage_business(actor_user, business):
-        return None, "Insufficient permission for this business"
+    business = Business.query.get(trunk.business_id) if trunk.business_id else None
+    if trunk.scope == "global":
+        if actor_user.role != "superuser":
+            return None, "Only superuser can manage global SIP trunks"
+    else:
+        if business is None:
+            return None, "Business not found"
+        if not _can_manage_business(actor_user, business):
+            return None, "Insufficient permission for this business"
 
     trunk.previous_config_json = json.dumps(
         {"trunk": _snapshot_trunk(trunk), "pjsip_content": _read_current_pjsip()}
@@ -366,7 +414,7 @@ def delete_sip_trunk(actor_user, trunk_id):
     db.session.commit()
     log_audit_event(
         "sip_trunk.deleted",
-        business_id=business.id,
+        business_id=business.id if business else None,
         actor_user_id=actor_user.id,
         metadata={"sip_trunk_id": trunk.id},
     )
@@ -378,11 +426,15 @@ def test_sip_trunk(actor_user, trunk_id):
     trunk = SipTrunk.query.get(trunk_id)
     if trunk is None:
         return None, "SIP trunk not found"
-    business = Business.query.get(trunk.business_id)
-    if business is None:
-        return None, "Business not found"
-    if not _can_manage_business(actor_user, business):
-        return None, "Insufficient permission for this business"
+    business = Business.query.get(trunk.business_id) if trunk.business_id else None
+    if trunk.scope == "global":
+        if actor_user.role != "superuser":
+            return None, "Only superuser can manage global SIP trunks"
+    else:
+        if business is None:
+            return None, "Business not found"
+        if not _can_manage_business(actor_user, business):
+            return None, "Insufficient permission for this business"
     checks = {
         "dns_resolve": {"ok": False, "details": ""},
         "tcp_connect": {"ok": False, "details": ""},
@@ -424,11 +476,15 @@ def reload_sip_trunk(actor_user, trunk_id):
     trunk = SipTrunk.query.get(trunk_id)
     if trunk is None:
         return None, "SIP trunk not found"
-    business = Business.query.get(trunk.business_id)
-    if business is None:
-        return None, "Business not found"
-    if not _can_manage_business(actor_user, business):
-        return None, "Insufficient permission for this business"
+    business = Business.query.get(trunk.business_id) if trunk.business_id else None
+    if trunk.scope == "global":
+        if actor_user.role != "superuser":
+            return None, "Only superuser can manage global SIP trunks"
+    else:
+        if business is None:
+            return None, "Business not found"
+        if not _can_manage_business(actor_user, business):
+            return None, "Insufficient permission for this business"
     snapshot = {
         "trunk": _snapshot_trunk(trunk),
         "pjsip_content": _read_current_pjsip(),
@@ -496,11 +552,15 @@ def rollback_sip_trunk(actor_user, trunk_id):
     trunk = SipTrunk.query.get(trunk_id)
     if trunk is None:
         return None, "SIP trunk not found"
-    business = Business.query.get(trunk.business_id)
-    if business is None:
-        return None, "Business not found"
-    if not _can_manage_business(actor_user, business):
-        return None, "Insufficient permission for this business"
+    business = Business.query.get(trunk.business_id) if trunk.business_id else None
+    if trunk.scope == "global":
+        if actor_user.role != "superuser":
+            return None, "Only superuser can manage global SIP trunks"
+    else:
+        if business is None:
+            return None, "Business not found"
+        if not _can_manage_business(actor_user, business):
+            return None, "Insufficient permission for this business"
     if not trunk.previous_config_json:
         return None, "No previous snapshot available for rollback"
     try:
@@ -549,13 +609,20 @@ def sip_trunk_status(actor_user, trunk_id):
     trunk = SipTrunk.query.get(trunk_id)
     if trunk is None:
         return None, "SIP trunk not found"
-    business = Business.query.get(trunk.business_id)
-    if business is None:
-        return None, "Business not found"
-    if not _can_view_business(actor_user, business):
-        return None, "Insufficient permission for this business"
+    business = Business.query.get(trunk.business_id) if trunk.business_id else None
+    if trunk.scope == "global":
+        if actor_user.role != "superuser":
+            return None, "Insufficient permission for this business"
+    else:
+        if business is None:
+            return None, "Business not found"
+        if not _can_view_business(actor_user, business):
+            return None, "Insufficient permission for this business"
     runtime_status = trunk.status
     runtime_details = ""
+    active_calls = 0
+    matched_channels = []
+    count_source = "ami_live"
     ami = AMIService()
     try:
         cmd = f"pjsip show registrations"
@@ -571,14 +638,29 @@ def sip_trunk_status(actor_user, trunk_id):
                 runtime_status = "unreachable"
             elif "failed" in lowered:
                 runtime_status = "failed"
+        endpoint = _trunk_endpoint_name(
+            trunk, realtime_enabled=bool(current_app.config.get("SIP_REALTIME_ENABLED", False))
+        )
+        call_snapshot = count_active_calls_for_endpoint(endpoint, ami)
+        active_calls = int(call_snapshot.get("active_calls") or 0)
+        matched_channels = call_snapshot.get("matched_channels") or []
     except Exception as exc:  # noqa: BLE001
         runtime_details = f"AMI status check failed: {exc}"
+        count_source = "unknown"
 
     response = {
         "sip_trunk_id": trunk.id,
         "status": runtime_status,
-        "active_calls": 0,
+        "active_calls": active_calls,
         "max_concurrent_calls": trunk.max_concurrent_calls,
+        "sip_endpoint": _trunk_endpoint_name(
+            trunk, realtime_enabled=bool(current_app.config.get("SIP_REALTIME_ENABLED", False))
+        ),
+        "count_source": count_source,
+        "matched_channels": [
+            {"channel": item.get("channel"), "state": item.get("state")}
+            for item in matched_channels[:10]
+        ],
         "runtime_details": runtime_details,
     }
     if current_app.config.get("SIP_REALTIME_ENABLED", False):

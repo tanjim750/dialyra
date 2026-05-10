@@ -18,7 +18,8 @@ def _slug(value: str) -> str:
 
 
 def _ids(trunk):
-    base = f"dialyra_b{trunk.business_id}_t{trunk.id}_{_slug(trunk.name)}"
+    business_part = trunk.business_id if trunk.business_id is not None else "global"
+    base = f"dialyra_b{business_part}_t{trunk.id}_{_slug(trunk.name)}"
     return {
         "base": base,
         "endpoint": f"{base}_ep",

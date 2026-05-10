@@ -24,7 +24,8 @@ def create_sip_trunk_endpoint():
     payload = request.get_json(silent=True) or {}
     result, error = create_sip_trunk(g.actor_user, payload)
     if error:
-        status = 409 if error == "SIP trunk name already exists in this business" else 403 if "permission" in error.lower() else 404 if error == "Business not found" else 400
+        denied = "permission" in error.lower() or "only superuser" in error.lower()
+        status = 409 if error == "SIP trunk name already exists in this business" else 403 if denied else 404 if error == "Business not found" else 400
         return jsonify({"error": error}), status
     return jsonify(result), 201
 
@@ -59,7 +60,8 @@ def update_sip_trunk_endpoint(trunk_id):
     payload = request.get_json(silent=True) or {}
     result, error = update_sip_trunk(g.actor_user, trunk_id, payload)
     if error:
-        status = 409 if error == "SIP trunk name already exists in this business" else 404 if error in {"SIP trunk not found", "Business not found"} else 403 if "permission" in error.lower() else 400
+        denied = "permission" in error.lower() or "only superuser" in error.lower()
+        status = 409 if error == "SIP trunk name already exists in this business" else 404 if error in {"SIP trunk not found", "Business not found"} else 403 if denied else 400
         return jsonify({"error": error}), status
     return jsonify(result), 200
 
@@ -114,7 +116,8 @@ def apply_sip_trunk_endpoint(trunk_id):
 def rollback_sip_trunk_endpoint(trunk_id):
     result, error = rollback_sip_trunk(g.actor_user, trunk_id)
     if error:
-        status = 404 if error in {"SIP trunk not found", "Business not found"} else 403 if "permission" in error.lower() else 400
+        denied = "permission" in error.lower() or "only superuser" in error.lower()
+        status = 404 if error in {"SIP trunk not found", "Business not found"} else 403 if denied else 400
         return jsonify({"error": error}), status
     return jsonify(result), 200
 

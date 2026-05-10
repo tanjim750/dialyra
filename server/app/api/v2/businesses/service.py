@@ -48,6 +48,7 @@ def serialize_business(business):
         "logo_path": business.logo_path,
         "status": business.status,
         "settings": _serialize_settings(business.settings_json),
+        "allow_global_sip_fallback": bool(business.allow_global_sip_fallback),
         "deleted_at": business.deleted_at.isoformat() if business.deleted_at else None,
         "created_at": business.created_at.isoformat() if business.created_at else None,
         "updated_at": business.updated_at.isoformat() if business.updated_at else None,
@@ -80,6 +81,22 @@ def list_businesses(actor_user):
 
 def get_business(actor_user, business):
     return serialize_business(business), None
+
+
+def set_global_sip_fallback(actor_user, business, enabled):
+    business.allow_global_sip_fallback = bool(enabled)
+    db.session.commit()
+    log_audit_event(
+        "business.global_sip_fallback_updated",
+        business_id=business.id,
+        actor_user_id=actor_user.id,
+        metadata={"allow_global_sip_fallback": bool(enabled)},
+    )
+    db.session.commit()
+    return {
+        "business_id": business.id,
+        "allow_global_sip_fallback": bool(business.allow_global_sip_fallback),
+    }, None
 
 
 def create_business(actor_user, payload):

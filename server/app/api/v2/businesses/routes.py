@@ -8,6 +8,7 @@ from app.api.v2.businesses.service import (
     list_members,
     list_businesses,
     remove_member,
+    set_global_sip_fallback,
     soft_delete_business,
     transfer_ownership,
     update_member,
@@ -18,6 +19,7 @@ from app.middleware.permissions_v2 import (
     jwt_context_required,
     require_business_access,
     require_permission,
+    require_superuser,
 )
 
 bp = Blueprint("businesses_v2", __name__, url_prefix="/api/v2/businesses")
@@ -169,4 +171,26 @@ def transfer_ownership_endpoint(business_id):
     if error:
         status = 404 if error in {"Target user not found"} else 403 if error in {"Only current owner can transfer ownership"} else 400
         return jsonify({"error": error}), status
+    return jsonify(result), 200
+
+
+@bp.post("/<int:business_id>/global-sip/enable")
+@jwt_context_required
+@require_superuser
+@require_business_access("business_id")
+def enable_global_sip_endpoint(business_id):
+    result, error = set_global_sip_fallback(g.actor_user, g.target_business, True)
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify(result), 200
+
+
+@bp.post("/<int:business_id>/global-sip/disable")
+@jwt_context_required
+@require_superuser
+@require_business_access("business_id")
+def disable_global_sip_endpoint(business_id):
+    result, error = set_global_sip_fallback(g.actor_user, g.target_business, False)
+    if error:
+        return jsonify({"error": error}), 400
     return jsonify(result), 200

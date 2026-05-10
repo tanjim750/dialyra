@@ -64,8 +64,6 @@ def originate_call_runtime():
 
     phone = payload["phone"]
     sip_trunk_id = payload.get("sip_trunk_id")
-    if sip_trunk_id is None:
-        return jsonify({"error": "Missing required field: sip_trunk_id"}), 400
     try:
         result, error = originate_call_for_business(
             phone=phone,
@@ -74,7 +72,44 @@ def originate_call_runtime():
             realtime_enabled=bool(current_app.config.get("SIP_REALTIME_ENABLED", False)),
         )
         if error:
-            return jsonify({"error": error}), 404
+            if error == "Invalid sip_trunk_id":
+                return jsonify({"error": error}), 400
+            if error in {"SIP trunk not found for this business", "Business not found"}:
+                return jsonify({"error": error}), 404
+            if error.startswith("GLOBAL_SIP_NOT_ALLOWED:"):
+                return (
+                    jsonify(
+                        {
+                            "status": "warning",
+                            "code": "GLOBAL_SIP_NOT_ALLOWED",
+                            "message": error.split(":", 1)[1].strip(),
+                        }
+                    ),
+                    403,
+                )
+            if error.startswith("NO_SIP_AVAILABLE:"):
+                return (
+                    jsonify(
+                        {
+                            "status": "warning",
+                            "code": "NO_SIP_AVAILABLE",
+                            "message": error.split(":", 1)[1].strip(),
+                        }
+                    ),
+                    409,
+                )
+            if error.startswith("NO_TRUNK_CAPACITY:"):
+                return (
+                    jsonify(
+                        {
+                            "status": "warning",
+                            "code": "NO_TRUNK_CAPACITY",
+                            "message": error.split(":", 1)[1].strip(),
+                        }
+                    ),
+                    409,
+                )
+            return jsonify({"error": error}), 403
         return jsonify(
             {
                 "status": "initiated",
@@ -82,6 +117,9 @@ def originate_call_runtime():
                 "business_id": g.actor_business.id,
                 "sip_trunk_id": result["sip_trunk_id"],
                 "sip_endpoint": result["sip_endpoint"],
+                "selected_by": result["selected_by"],
+                "active_calls_before": result["active_calls_before"],
+                "max_concurrent_calls": result["max_concurrent_calls"],
                 "auth_type": g.auth_type,
                 "response": str(result["ami_response"]),
             }

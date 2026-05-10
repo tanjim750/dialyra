@@ -11,8 +11,9 @@ class SipTrunk(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     business_id = db.Column(
-        db.Integer, db.ForeignKey("businesses.id"), nullable=False, index=True
+        db.Integer, db.ForeignKey("businesses.id"), nullable=True, index=True
     )
+    scope = db.Column(db.String(20), nullable=False, default="business")
     name = db.Column(db.String(255), nullable=False)
     provider_name = db.Column(db.String(255), nullable=True)
     type = db.Column(db.String(20), nullable=False, default="registration")
