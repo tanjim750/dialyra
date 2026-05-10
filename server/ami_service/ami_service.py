@@ -26,14 +26,48 @@ class AMIService:
             )
             sock.send(login.encode())
 
-            sock.recv(4096)  # consume login response
+            self._recv_until_complete(sock)  # consume login response
 
             sock.send(data.encode())
 
-            response = sock.recv(8192).decode(errors="replace")
+            response = self._recv_until_complete(sock)
             return response
         finally:
             sock.close()
+
+    def _recv_until_complete(self, sock):
+        chunks = []
+        saw_data = False
+        while True:
+            try:
+                chunk = sock.recv(8192)
+            except socket.timeout:
+                # No more data arriving; return what we collected so far.
+                break
+
+            if not chunk:
+                break
+
+            saw_data = True
+            text = chunk.decode(errors="replace")
+            chunks.append(text)
+            joined = "".join(chunks)
+
+            # AMI command responses terminate with END marker.
+            if "--END COMMAND--" in joined:
+                break
+
+            # CoreShowChannels AMI action terminator.
+            if "Event: CoreShowChannelsComplete" in joined:
+                break
+
+            # Simple success/error responses (e.g. Originate accepted).
+            if "Response:" in joined and "\r\n\r\n" in joined and "Event:" not in joined:
+                break
+
+        if not saw_data:
+            return ""
+        return "".join(chunks)
 
     def originate_call(self, phone_number, channel_variables=None):
         action_id = str(uuid.uuid4())

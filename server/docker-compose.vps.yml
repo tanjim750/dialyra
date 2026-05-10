@@ -1,10 +1,78 @@
 services:
-  dialyra_flask:
+  db:
+    image: postgres:15
+    container_name: dialyra-db
+    restart: unless-stopped
+    profiles: ["infra"]
+    env_file:
+      - ../.env
     environment:
-      AMI_HOST: ${AMI_HOST:-138.252.125.100}
+      POSTGRES_DB: ${DB_NAME:-dialyra_db}
+      POSTGRES_USER: ${DB_USER:-dialyra_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dialyra_pass}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - dialyra_postgres_data:/var/lib/postgresql/data
+    networks:
+      dialyra-net:
+        aliases:
+          - db
+          - dialyra-db
+
+  redis:
+    image: redis:7
+    container_name: dialyra-redis
+    restart: unless-stopped
+    profiles: ["infra"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - dialyra_redis_data:/data
+    networks:
+      dialyra-net:
+        aliases:
+          - redis
+          - dialyra-redis
+
+  dialyra_flask:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    container_name: dialyra-flask
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      AMI_HOST: ${AMI_HOST:-dialyra-asterisk}
       AMI_PORT: ${AMI_PORT:-5038}
       AMI_USERNAME: ${AMI_USERNAME:-admin}
       AMI_SECRET: ${AMI_SECRET:-dialyra123}
       AMI_TIMEOUT: ${AMI_TIMEOUT:-5}
     ports:
       - "5000:5000"
+    depends_on:
+      db:
+        condition: service_started
+        required: false
+      redis:
+        condition: service_started
+        required: false
+    volumes:
+      - ../:/app
+      - ../storage/audio:/data/audio
+      - ../storage/recordings:/data/recordings
+    networks:
+      - dialyra-net
+
+networks:
+  dialyra-net:
+    name: dialyra-net
+    external: true
+
+volumes:
+  dialyra_postgres_data:
+    name: dialyra_postgres_data
+  dialyra_redis_data:
+    name: dialyra_redis_data
