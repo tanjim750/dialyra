@@ -69,8 +69,8 @@ class AMIService:
             return ""
         return "".join(chunks)
 
-    def originate_call(self, phone_number, channel_variables=None):
-        action_id = str(uuid.uuid4())
+    def originate_call(self, phone_number, channel_variables=None, action_id=None):
+        action_id = action_id or str(uuid.uuid4())
 
         print(
             f"Initiating call to {phone_number} via AMI at {self.host}:{self.port}..."

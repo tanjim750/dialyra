@@ -1,5 +1,6 @@
 from flask import Blueprint, g, jsonify, request
 
+from app.api.v2.calls.event_service import process_call_event
 from app.middleware.permissions_v2 import access_token_context_required
 
 bp = Blueprint("internal_v2", __name__, url_prefix="/api/v2/internal")
@@ -73,11 +74,16 @@ def playback_event(call_id):
 @access_token_context_required("events:write")
 def call_events():
     payload = request.get_json(silent=True) or {}
+    result, error = process_call_event(payload, business_id=g.actor_business.id)
+    if error:
+        status = 404 if "not found" in error.lower() else 400
+        return jsonify({"error": error}), status
     return jsonify(
         {
             "status": "accepted",
             "event": "call-events",
             "business_id": g.actor_business.id,
             "payload": payload,
+            "call_log": result,
         }
     ), 200

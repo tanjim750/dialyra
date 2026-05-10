@@ -55,6 +55,12 @@ class Config:
     AMI_USERNAME = os.getenv("AMI_USERNAME", "admin")
     AMI_SECRET = os.getenv("AMI_SECRET", "dialyra123")
     AMI_TIMEOUT = float(os.getenv("AMI_TIMEOUT", "5"))
+    AMI_EVENT_LISTENER_ENABLED = (
+        os.getenv("AMI_EVENT_LISTENER_ENABLED", "false").lower() == "true"
+    )
+    AMI_EVENT_RECONNECT_DELAY_SEC = float(
+        os.getenv("AMI_EVENT_RECONNECT_DELAY_SEC", "2")
+    )
     PJSIP_CONFIG_PATH = os.getenv("PJSIP_CONFIG_PATH", "/app/asterisk/pjsip.conf")
     PJSIP_TRANSPORT_NAME = os.getenv("PJSIP_TRANSPORT_NAME", "transport-udp")
     SIP_REALTIME_ENABLED = os.getenv("SIP_REALTIME_ENABLED", "false").lower() == "true"

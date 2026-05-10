@@ -8,6 +8,7 @@ from app.cli import register_cli_commands
 from app.extensions import db, init_extensions
 from app.middleware.error_handlers import register_error_handlers
 from app.middleware.request_id import register_request_id_middleware
+from app.services.ami_event_listener import start_ami_event_listener
 from app.utils.logging import configure_logging
 
 
@@ -31,6 +32,8 @@ def create_app(config_name=None):
     with app.app_context():
         # Bootstrap tables for the current scaffold. Move to migrations flow later.
         db.create_all()
+
+    start_ami_event_listener(app)
 
     return app
 

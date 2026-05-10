@@ -4,9 +4,11 @@ from werkzeug.security import generate_password_hash
 from app.api.v1.auth.service import _get_or_create_system_business
 from app.extensions import db
 from app.models import User
+from app.services.call_reconciliation import reconcile_call_logs_from_cdr
 from scripts import (
     migrate_business_owner_user_id,
     migrate_business_schema,
+    migrate_call_logs,
     migrate_drop_user_business_id,
     migrate_roles,
     migrate_sip_realtime,
@@ -47,6 +49,10 @@ def register_cli_commands(app):
     @app.cli.group("sip")
     def sip_group():
         """SIP related commands."""
+
+    @app.cli.group("calls")
+    def calls_group():
+        """Calls and reporting related commands."""
 
     @migrate_group.command("roles")
     @click.option("--apply", is_flag=True, default=False, help="Apply changes")
@@ -156,6 +162,12 @@ def register_cli_commands(app):
         migrate_sip_trunks.ensure_fk()
         migrate_sip_trunks.ensure_indexes_and_constraints()
         click.echo("  apply: sip_trunks schema step completed.")
+        click.echo("\n== Step 5: call_logs schema ==")
+        migrate_call_logs.apply_schema()
+        migrate_call_logs.ensure_fk()
+        migrate_call_logs.ensure_indexes()
+        migrate_call_logs.ensure_constraints()
+        click.echo("  apply: call_logs schema step completed.")
         click.echo("\nApply mode: all migration steps completed successfully.")
 
     @migrate_group.command("drop-user-business-id")
@@ -212,6 +224,25 @@ def register_cli_commands(app):
         click.echo(f"  missing_tables_after_apply: {after_missing}")
         click.echo(f"  table_counts: {counts}")
 
+    @migrate_group.command("call-logs")
+    @click.option("--apply", is_flag=True, default=False, help="Apply changes")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
+    def migrate_call_logs_cmd(apply, dry_run):
+        effective_dry_run = (not apply) or dry_run
+        exists = migrate_call_logs.table_exists()
+        columns = migrate_call_logs.list_columns() if exists else set()
+        click.echo("Call logs schema check:")
+        click.echo(f"  table_exists: {exists}")
+        click.echo(f"  columns: {len(columns)}")
+        if effective_dry_run:
+            click.echo("\nDry-run mode: no changes written.")
+            return
+        migrate_call_logs.apply_schema()
+        migrate_call_logs.ensure_fk()
+        migrate_call_logs.ensure_indexes()
+        migrate_call_logs.ensure_constraints()
+        click.echo("\nApply mode: call_logs schema updated successfully.")
+
     @sip_group.command("init-realtime")
     @click.option("--apply", is_flag=True, default=False, help="Apply changes")
     @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
@@ -234,3 +265,31 @@ def register_cli_commands(app):
         click.echo("\nApply mode: SIP realtime initialized successfully.")
         click.echo(f"  missing_tables_after_apply: {after_missing}")
         click.echo(f"  table_counts: {counts}")
+
+    @calls_group.command("reconcile")
+    @click.option("--apply", is_flag=True, default=False, help="Apply changes")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
+    @click.option("--hours-back", default=24, type=int, show_default=True)
+    @click.option("--limit", default=5000, type=int, show_default=True)
+    def calls_reconcile_cmd(apply, dry_run, hours_back, limit):
+        effective_dry_run = (not apply) or dry_run
+        result, error = reconcile_call_logs_from_cdr(
+            hours_back=hours_back,
+            limit=limit,
+            dry_run=effective_dry_run,
+        )
+        if error:
+            click.echo(f"Reconcile failed: {error}")
+            raise SystemExit(1)
+
+        click.echo("Call reconciliation result:")
+        click.echo(f"  source.cdr: {result['source']['cdr']}")
+        click.echo(f"  source.cel: {result['source']['cel']}")
+        click.echo(f"  window_start: {result['window_start']}")
+        click.echo(f"  dry_run: {result['dry_run']}")
+        stats = result["stats"]
+        click.echo(f"  scanned: {stats['scanned']}")
+        click.echo(f"  matched: {stats['matched']}")
+        click.echo(f"  updated: {stats['updated']}")
+        click.echo(f"  skipped_finalized: {stats['skipped_finalized']}")
+        click.echo(f"  unmatched: {stats['unmatched']}")

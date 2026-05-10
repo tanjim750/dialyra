@@ -50,6 +50,8 @@ services:
       AMI_USERNAME: ${AMI_USERNAME:-admin}
       AMI_SECRET: ${AMI_SECRET:-dialyra123}
       AMI_TIMEOUT: ${AMI_TIMEOUT:-5}
+      AMI_EVENT_LISTENER_ENABLED: ${AMI_EVENT_LISTENER_ENABLED:-false}
+      AMI_EVENT_RECONNECT_DELAY_SEC: ${AMI_EVENT_RECONNECT_DELAY_SEC:-2}
     ports:
       - "5001:5000"
     depends_on:
