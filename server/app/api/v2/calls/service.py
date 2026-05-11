@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 
 from app.extensions import db
+from app.services.fastagi_call_token import issue_fastagi_call_token
 from app.services.ami_service import AMIService
 from app.services.asterisk_channels import (
     count_active_calls_for_endpoint,
@@ -41,6 +42,7 @@ def _build_originate_channel_variables(
     action_id,
     flow_id=None,
     flow_version_id=None,
+    fastagi_call_token=None,
     extra_channel_variables=None,
 ):
     vars_map = {
@@ -59,6 +61,8 @@ def _build_originate_channel_variables(
         vars_map["FLOW_ID"] = int(flow_id)
     if flow_version_id is not None:
         vars_map["FLOW_VERSION_ID"] = int(flow_version_id)
+    if fastagi_call_token:
+        vars_map["FASTAGI_CALL_TOKEN"] = str(fastagi_call_token)
     if isinstance(extra_channel_variables, dict):
         for key, value in extra_channel_variables.items():
             if key and value is not None:
@@ -409,6 +413,11 @@ def originate_call_for_business(
         action_id=action_id,
         flow_id=selected_flow_id,
         flow_version_id=selected_flow_version_id,
+        fastagi_call_token=issue_fastagi_call_token(
+            call_session_id=call_session.id,
+            business_id=int(business_id),
+            ttl_sec=int(getattr(ami_service, "fastagi_call_token_ttl_sec", 900) or 900),
+        ),
         extra_channel_variables=extra_channel_variables,
     )
 

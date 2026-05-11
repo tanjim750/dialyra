@@ -10,6 +10,7 @@ class AMIService:
         self.username = os.getenv("AMI_USERNAME")
         self.secret = os.getenv("AMI_SECRET")
         self.timeout = float(os.getenv("AMI_TIMEOUT", "5"))
+        self.fastagi_call_token_ttl_sec = int(os.getenv("FASTAGI_CALL_TOKEN_TTL_SEC", "900"))
 
     def _send(self, data: str):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
