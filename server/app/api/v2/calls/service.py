@@ -9,7 +9,7 @@ from app.services.asterisk_channels import (
     find_live_channel_by_number,
     find_live_channel_by_uniqueid,
 )
-from app.models import AuditLog, Business, CallLog, CallSession, SipTrunk
+from app.models import AuditLog, Business, CallLog, CallSession, FlowVersion, SipTrunk
 from sqlalchemy import case, func
 
 
@@ -39,6 +39,8 @@ def _build_originate_channel_variables(
     call_uuid,
     call_session_id,
     action_id,
+    flow_id=None,
+    flow_version_id=None,
     extra_channel_variables=None,
 ):
     vars_map = {
@@ -53,6 +55,10 @@ def _build_originate_channel_variables(
         "CALL_SESSION_ID": call_session_id,
         "CALL_ACTION_ID": action_id,
     }
+    if flow_id is not None:
+        vars_map["FLOW_ID"] = int(flow_id)
+    if flow_version_id is not None:
+        vars_map["FLOW_VERSION_ID"] = int(flow_version_id)
     if isinstance(extra_channel_variables, dict):
         for key, value in extra_channel_variables.items():
             if key and value is not None:
@@ -151,6 +157,89 @@ def _business_max_concurrent_calls(business):
     return normalized if normalized > 0 else None
 
 
+def _business_default_flow_id(business):
+    raw = business.settings_json
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get("default_flow_id")
+    if value is None:
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
+def _resolve_flow_selection_for_business(business_id, *, flow_id=None, campaign_flow_id=None):
+    # 1) explicit flow_id
+    if flow_id is not None:
+        row = (
+            FlowVersion.query.filter_by(
+                business_id=int(business_id),
+                flow_id=int(flow_id),
+                is_active=True,
+            )
+            .order_by(FlowVersion.version_number.desc())
+            .first()
+        )
+        if row is None:
+            return None, None, "INVALID_FLOW_ID: flow_id is not published/active for this business"
+        return int(row.flow_id), int(row.id), "explicit_flow_id"
+
+    # 2) campaign-linked flow (provided by caller integration)
+    if campaign_flow_id is not None:
+        row = (
+            FlowVersion.query.filter_by(
+                business_id=int(business_id),
+                flow_id=int(campaign_flow_id),
+                is_active=True,
+            )
+            .order_by(FlowVersion.version_number.desc())
+            .first()
+        )
+        if row is None:
+            return None, None, "INVALID_CAMPAIGN_FLOW_ID: campaign_flow_id is not published/active for this business"
+        return int(row.flow_id), int(row.id), "campaign_flow_id"
+
+    # 3) business default flow
+    business = Business.query.get(int(business_id))
+    default_flow_id = _business_default_flow_id(business) if business is not None else None
+    if default_flow_id is not None:
+        row = (
+            FlowVersion.query.filter_by(
+                business_id=int(business_id),
+                flow_id=int(default_flow_id),
+                is_active=True,
+            )
+            .order_by(FlowVersion.version_number.desc())
+            .first()
+        )
+        if row is not None:
+            return int(row.flow_id), int(row.id), "business_default_flow"
+
+    # 4) latest active published flow for business
+    row = (
+        FlowVersion.query.filter_by(
+            business_id=int(business_id),
+            is_active=True,
+        )
+        .order_by(FlowVersion.published_at.desc(), FlowVersion.id.desc())
+        .first()
+    )
+    if row is not None:
+        return int(row.flow_id), int(row.id), "latest_published_flow"
+
+    # 5) no flow
+    return None, None, "NO_FLOW_AVAILABLE: No published flow available for this business"
+
+
 def originate_call_for_business(
     phone,
     business_id,
@@ -159,10 +248,21 @@ def originate_call_for_business(
     actor_user_id=None,
     session_metadata=None,
     extra_channel_variables=None,
+    flow_id=None,
+    campaign_id=None,
+    campaign_flow_id=None,
 ):
     business = Business.query.get(int(business_id))
     if business is None:
         return None, "Business not found"
+
+    selected_flow_id, selected_flow_version_id, flow_selected_by = _resolve_flow_selection_for_business(
+        business_id,
+        flow_id=flow_id,
+        campaign_flow_id=campaign_flow_id,
+    )
+    if flow_selected_by.startswith("INVALID_") or flow_selected_by.startswith("NO_FLOW_AVAILABLE"):
+        return None, flow_selected_by
 
     business_active_calls_before = _count_active_sessions_for_business(business_id)
     business_max_concurrent = _business_max_concurrent_calls(business)
@@ -275,9 +375,9 @@ def originate_call_for_business(
     )
     call_session = CallSession(
         business_id=int(business_id),
-        flow_id=None,
-        flow_version_id=None,
-        campaign_id=None,
+        flow_id=selected_flow_id,
+        flow_version_id=selected_flow_version_id,
+        campaign_id=(int(campaign_id) if campaign_id is not None else None),
         contact_id=None,
         sip_trunk_id=trunk.id,
         call_direction="outbound",
@@ -307,6 +407,8 @@ def originate_call_for_business(
         call_uuid=call_uuid,
         call_session_id=call_session.id,
         action_id=action_id,
+        flow_id=selected_flow_id,
+        flow_version_id=selected_flow_version_id,
         extra_channel_variables=extra_channel_variables,
     )
 
@@ -323,6 +425,9 @@ def originate_call_for_business(
         "sip_trunk_id": trunk.id,
         "sip_endpoint": endpoint,
         "selected_by": selected_by,
+        "selected_flow_id": selected_flow_id,
+        "selected_flow_version_id": selected_flow_version_id,
+        "flow_selected_by": flow_selected_by,
         "active_calls_before": active_calls_before,
         "max_concurrent_calls": trunk.max_concurrent_calls,
         "business_active_calls_before": business_active_calls_before,
@@ -387,6 +492,8 @@ def retry_call_session_for_business(
         realtime_enabled=realtime_enabled,
         actor_user_id=actor_user_id,
         session_metadata=session_metadata,
+        flow_id=source.flow_id,
+        campaign_id=source.campaign_id,
         extra_channel_variables={
             "RETRY_COUNT": next_retry_count,
             "RETRY_OF_CALL_SESSION_ID": source.id,

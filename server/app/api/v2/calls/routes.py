@@ -93,6 +93,9 @@ def originate_call_runtime():
 
     phone = payload["phone"]
     sip_trunk_id = payload.get("sip_trunk_id")
+    flow_id = payload.get("flow_id")
+    campaign_id = payload.get("campaign_id")
+    campaign_flow_id = payload.get("campaign_flow_id")
     try:
         result, error = originate_call_for_business(
             phone=phone,
@@ -100,6 +103,9 @@ def originate_call_runtime():
             sip_trunk_id=sip_trunk_id,
             realtime_enabled=bool(current_app.config.get("SIP_REALTIME_ENABLED", False)),
             actor_user_id=(g.actor_user.id if getattr(g, "actor_user", None) else None),
+            flow_id=flow_id,
+            campaign_id=campaign_id,
+            campaign_flow_id=campaign_flow_id,
         )
         if error:
             _audit(
@@ -111,6 +117,8 @@ def originate_call_runtime():
                 },
             )
             if error == "Invalid sip_trunk_id":
+                return jsonify({"error": error}), 400
+            if error.startswith("INVALID_FLOW_ID:") or error.startswith("INVALID_CAMPAIGN_FLOW_ID:"):
                 return jsonify({"error": error}), 400
             if error in {"SIP trunk not found for this business", "Business not found"}:
                 return jsonify({"error": error}), 404
@@ -131,6 +139,17 @@ def originate_call_runtime():
                         {
                             "status": "warning",
                             "code": "NO_SIP_AVAILABLE",
+                            "message": error.split(":", 1)[1].strip(),
+                        }
+                    ),
+                    409,
+                )
+            if error.startswith("NO_FLOW_AVAILABLE:"):
+                return (
+                    jsonify(
+                        {
+                            "status": "warning",
+                            "code": "NO_FLOW_AVAILABLE",
                             "message": error.split(":", 1)[1].strip(),
                         }
                     ),
@@ -180,6 +199,9 @@ def originate_call_runtime():
                 "sip_trunk_id": result["sip_trunk_id"],
                 "sip_endpoint": result["sip_endpoint"],
                 "selected_by": result["selected_by"],
+                "selected_flow_id": result["selected_flow_id"],
+                "selected_flow_version_id": result["selected_flow_version_id"],
+                "flow_selected_by": result["flow_selected_by"],
                 "active_calls_before": result["active_calls_before"],
                 "max_concurrent_calls": result["max_concurrent_calls"],
                 "business_active_calls_before": result["business_active_calls_before"],
@@ -199,6 +221,9 @@ def originate_call_runtime():
                 "sip_trunk_id": result["sip_trunk_id"],
                 "sip_endpoint": result["sip_endpoint"],
                 "selected_by": result["selected_by"],
+                "selected_flow_id": result["selected_flow_id"],
+                "selected_flow_version_id": result["selected_flow_version_id"],
+                "flow_selected_by": result["flow_selected_by"],
                 "active_calls_before": result["active_calls_before"],
                 "max_concurrent_calls": result["max_concurrent_calls"],
                 "business_active_calls_before": result["business_active_calls_before"],
