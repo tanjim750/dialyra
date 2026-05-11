@@ -1,6 +1,7 @@
 from flask import Blueprint, g, jsonify, request
 
 from app.api.v2.flows.service import (
+    create_and_publish_flow,
     create_flow,
     create_flow_edge,
     create_flow_node,
@@ -30,6 +31,18 @@ bp = Blueprint("flows_v2", __name__, url_prefix="/api/v2")
 def create_flow_endpoint():
     payload = request.get_json(silent=True) or {}
     result, error = create_flow(g.actor_user, payload)
+    if error:
+        status = 404 if error == "Business not found" else 403 if "permission" in error.lower() else 400
+        return jsonify({"error": error}), status
+    return jsonify(result), 201
+
+
+@bp.post("/flows/create-and-publish")
+@jwt_context_required
+@require_permission("businesses.manage")
+def create_and_publish_flow_endpoint():
+    payload = request.get_json(silent=True) or {}
+    result, error = create_and_publish_flow(g.actor_user, payload)
     if error:
         status = 404 if error == "Business not found" else 403 if "permission" in error.lower() else 400
         return jsonify({"error": error}), status

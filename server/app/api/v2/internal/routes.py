@@ -2,7 +2,12 @@ import hashlib
 import uuid
 from flask import Blueprint, current_app, g, jsonify, request
 
-from app.api.v2.calls.event_service import process_call_event
+from app.api.v2.calls.event_service import (
+    list_call_events,
+    process_call_event,
+    reprocess_call_event,
+)
+from app.api.v2.audio_assets.service import resolve_playback_target_for_runtime_business
 from app.api.v2.flows.runtime_service import append_runtime_event, get_runtime_state, resolve_next_runtime
 from app.middleware.permissions_v2 import access_token_context_required
 
@@ -359,3 +364,67 @@ def call_events():
             "call_log": result,
         }
     ), 200
+
+
+@bp.get("/call-events")
+@access_token_context_required("events:write")
+def list_call_events_endpoint():
+    status = request.args.get("status")
+    business_id = request.args.get("business_id")
+    page = request.args.get("page", 1)
+    page_size = request.args.get("page_size", 20)
+
+    scoped_business_id = g.actor_business.id
+    if business_id is not None:
+        try:
+            requested_business_id = int(business_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid business_id"}), 400
+        if requested_business_id != scoped_business_id:
+            return jsonify({"error": "Insufficient permission for this business"}), 403
+
+    if status and str(status).strip().lower() not in {"pending", "processed", "failed"}:
+        return jsonify({"error": "Invalid status"}), 400
+
+    try:
+        result, error = list_call_events(
+            business_id=scoped_business_id,
+            status=status,
+            page=int(page),
+            page_size=int(page_size),
+        )
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid pagination params"}), 400
+
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify(result), 200
+
+
+@bp.post("/call-events/<string:event_id>/reprocess")
+@access_token_context_required("events:write")
+def reprocess_call_events_endpoint(event_id):
+    result, error = reprocess_call_event(event_id, business_id=g.actor_business.id)
+    if error:
+        if error == "Call event not found":
+            return jsonify({"error": error}), 404
+        if error == "Invalid event id":
+            return jsonify({"error": error}), 400
+        return jsonify({"error": error}), 422
+    return jsonify({"status": "accepted", "event": "call-event.reprocess", "result": result}), 200
+
+
+@bp.get("/audio-assets/<string:asset_id>/playback-target")
+@access_token_context_required("fastagi:runtime")
+def get_runtime_playback_target(asset_id):
+    result, error = resolve_playback_target_for_runtime_business(g.actor_business, asset_id)
+    if error:
+        status = (
+            404
+            if error in {"Audio asset not found for this business", "Audio file not found"}
+            else 410
+            if error == "Audio asset is deleted"
+            else 400
+        )
+        return jsonify({"error": error}), status
+    return jsonify(result), 200

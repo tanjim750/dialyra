@@ -368,6 +368,202 @@ def create_flow(actor_user, payload):
     return _serialize_flow(flow), None
 
 
+def create_and_publish_flow(actor_user, payload):
+    payload = payload or {}
+    flow_payload = payload.get("flow") if isinstance(payload.get("flow"), dict) else payload
+    nodes_payload = payload.get("nodes")
+    edges_payload = payload.get("edges")
+    start_node_key = str(payload.get("start_node_key") or flow_payload.get("start_node_key") or "").strip() or None
+
+    if not isinstance(nodes_payload, list) or len(nodes_payload) == 0:
+        return None, "nodes must be a non-empty array"
+    if not isinstance(edges_payload, list) or len(edges_payload) == 0:
+        return None, "edges must be a non-empty array"
+
+    business_id = flow_payload.get("business_id")
+    business, error = _resolve_business_for_actor(actor_user, business_id, manage=True)
+    if error:
+        return None, error
+
+    name = (flow_payload.get("name") or "").strip()
+    description = (flow_payload.get("description") or "").strip() or None
+    if not name:
+        return None, "Missing required field: flow.name"
+
+    seen_node_keys = set()
+    for idx, item in enumerate(nodes_payload):
+        if not isinstance(item, dict):
+            return None, f"nodes[{idx}] must be an object"
+        node_key = str(item.get("node_key") or "").strip()
+        node_type = str(item.get("node_type") or "").strip()
+        node_name = str(item.get("name") or "").strip()
+        if not node_key or not node_type or not node_name:
+            return None, f"nodes[{idx}] missing required fields: node_key, node_type, name"
+        if node_type not in VALID_NODE_TYPES:
+            return None, f"nodes[{idx}] has invalid node_type"
+        if node_key in seen_node_keys:
+            return None, f"Duplicate node_key in nodes payload: {node_key}"
+        seen_node_keys.add(node_key)
+        cfg = item.get("config") if isinstance(item.get("config"), dict) else {}
+        config_errors = _validate_node_config(node_type, cfg)
+        if config_errors:
+            first = config_errors[0]
+            return None, f"nodes[{idx}] {first['code']}: {first['message']}"
+
+    if start_node_key and start_node_key not in seen_node_keys:
+        return None, "start_node_key must reference an existing node_key in nodes array"
+
+    node_key_to_id = {}
+    flow = None
+    published_row = None
+    validation = None
+    try:
+        flow = Flow(
+            business_id=business.id,
+            name=name,
+            description=description,
+            status="draft",
+            version=1,
+            created_by=actor_user.id,
+        )
+        db.session.add(flow)
+        db.session.flush()
+
+        for idx, item in enumerate(nodes_payload):
+            node_key = str(item.get("node_key") or "").strip()
+            cfg = item.get("config") if isinstance(item.get("config"), dict) else {}
+            is_start = bool(item.get("is_start", False))
+            if start_node_key and node_key == start_node_key:
+                is_start = True
+            node = FlowNode(
+                flow_id=flow.id,
+                business_id=flow.business_id,
+                node_key=node_key,
+                node_type=str(item.get("node_type")).strip(),
+                name=str(item.get("name")).strip(),
+                config_json=json.dumps(cfg),
+                position_x=float(item["position_x"]) if item.get("position_x") is not None else None,
+                position_y=float(item["position_y"]) if item.get("position_y") is not None else None,
+                is_start=is_start,
+            )
+            db.session.add(node)
+            db.session.flush()
+            node_key_to_id[node_key] = node.id
+            if is_start:
+                flow.start_node_id = node.id
+
+        if flow.start_node_id is None and nodes_payload:
+            first_key = str(nodes_payload[0].get("node_key") or "").strip()
+            if first_key:
+                first_node_id = node_key_to_id.get(first_key)
+                if first_node_id is not None:
+                    flow.start_node_id = first_node_id
+                    FlowNode.query.filter_by(id=first_node_id).update({"is_start": True})
+
+        seen_edge_signatures = set()
+        for idx, item in enumerate(edges_payload):
+            if not isinstance(item, dict):
+                raise ValueError(f"edges[{idx}] must be an object")
+            condition_type = str(item.get("condition_type") or "always").strip()
+            if condition_type not in VALID_CONDITION_TYPES:
+                raise ValueError(f"edges[{idx}] has invalid condition_type")
+
+            condition_value = (str(item.get("condition_value") or "").strip() or None)
+            edge_code, edge_msg = _validate_edge_rule_inputs(condition_type, condition_value)
+            if edge_code:
+                raise ValueError(f"edges[{idx}] {edge_code}: {edge_msg}")
+
+            source_node_id = _parse_business_id(item.get("source_node_id"))
+            target_node_id = _parse_business_id(item.get("target_node_id"))
+            source_node_key = str(item.get("source_node_key") or "").strip() or None
+            target_node_key = str(item.get("target_node_key") or "").strip() or None
+
+            if source_node_id is None and source_node_key:
+                source_node_id = node_key_to_id.get(source_node_key)
+            if target_node_id is None and target_node_key:
+                target_node_id = node_key_to_id.get(target_node_key)
+            if source_node_id is None or target_node_id is None:
+                raise ValueError(
+                    f"edges[{idx}] must resolve source and target via source_node_id/source_node_key and target_node_id/target_node_key"
+                )
+
+            signature = _edge_signature(source_node_id, condition_type, condition_value)
+            if signature in seen_edge_signatures:
+                raise ValueError(
+                    "DUPLICATE_EDGE_CONDITION: identical edge condition already exists for this source node"
+                )
+            seen_edge_signatures.add(signature)
+
+            db.session.add(
+                FlowEdge(
+                    flow_id=flow.id,
+                    business_id=flow.business_id,
+                    source_node_id=source_node_id,
+                    target_node_id=target_node_id,
+                    condition_type=condition_type,
+                    condition_value=condition_value,
+                    priority=int(item.get("priority", 100)),
+                    label=(str(item.get("label") or "").strip() or None),
+                )
+            )
+
+        db.session.flush()
+        validation, validation_error = validate_flow(actor_user, flow.id)
+        if validation_error:
+            raise ValueError(validation_error)
+        if not validation.get("valid"):
+            return None, f"Flow validation failed: {json.dumps(validation, ensure_ascii=False)}"
+
+        nodes, edges = _load_flow_graph(flow.id)
+        nodes_payload_out = [_serialize_node(n) for n in sorted(nodes, key=lambda x: x.id)]
+        edges_payload_out = [_serialize_edge(e) for e in sorted(edges, key=lambda x: (x.priority, x.id))]
+
+        max_version = (
+            db.session.query(db.func.max(FlowVersion.version_number))
+            .filter(FlowVersion.flow_id == flow.id)
+            .scalar()
+        )
+        next_version = int(max_version or 0) + 1
+        snapshot = {
+            "flow": _serialize_flow(flow),
+            "nodes": nodes_payload_out,
+            "edges": edges_payload_out,
+        }
+        FlowVersion.query.filter_by(flow_id=flow.id, is_active=True).update({"is_active": False})
+        published_row = FlowVersion(
+            flow_id=flow.id,
+            business_id=flow.business_id,
+            version_number=next_version,
+            snapshot_json=json.dumps(snapshot),
+            published_by=actor_user.id,
+            is_active=True,
+        )
+        db.session.add(published_row)
+
+        flow.status = "published"
+        flow.version = next_version
+        from datetime import datetime
+
+        flow.published_at = datetime.utcnow()
+        db.session.commit()
+        return {
+            "message": "Flow created and published successfully",
+            "flow": _serialize_flow(flow),
+            "flow_version": _serialize_flow_version(published_row),
+            "validation": validation,
+            "counts": {
+                "nodes": len(nodes_payload_out),
+                "edges": len(edges_payload_out),
+            },
+        }, None
+    except ValueError as exc:
+        db.session.rollback()
+        return None, str(exc)
+    except Exception:
+        db.session.rollback()
+        raise
+
+
 def list_flows(actor_user, business_id=None, status=None):
     query = Flow.query
     if actor_user.role == "superuser":

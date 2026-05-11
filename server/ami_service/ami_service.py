@@ -116,3 +116,12 @@ class AMIService:
             f"Async: true\r\n\r\n"
         )
         return self._send(action)
+
+    def hangup_channel(self, channel, action_id=None):
+        action_id = action_id or str(uuid.uuid4())
+        action = (
+            "Action: Hangup\r\n"
+            f"ActionID: {action_id}\r\n"
+            f"Channel: {channel}\r\n\r\n"
+        )
+        return self._send(action)

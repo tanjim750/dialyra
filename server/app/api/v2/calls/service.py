@@ -1,14 +1,20 @@
 import uuid
+import json
 from datetime import datetime, timedelta
 
 from app.extensions import db
 from app.services.ami_service import AMIService
-from app.services.asterisk_channels import count_active_calls_for_endpoint
-from app.models import Business, CallLog, SipTrunk
+from app.services.asterisk_channels import (
+    count_active_calls_for_endpoint,
+    find_live_channel_by_number,
+    find_live_channel_by_uniqueid,
+)
+from app.models import AuditLog, Business, CallLog, CallSession, SipTrunk
 from sqlalchemy import case, func
 
 
 ami_service = AMIService()
+ACTIVE_CALL_SESSION_STATUSES = {"queued", "initiating", "ringing", "answered", "hangup"}
 
 
 def _slug(value):
@@ -23,6 +29,35 @@ def _trunk_endpoint_name(trunk, realtime_enabled):
     if realtime_enabled:
         return f"dialyra_b{business_part}_t{trunk.id}_{_slug(trunk.name)}_ep"
     return f"dialyra-b{business_part}-t{trunk.id}-{_slug(trunk.name)}-endpoint"
+
+
+def _build_originate_channel_variables(
+    *,
+    phone,
+    trunk,
+    endpoint,
+    call_uuid,
+    call_session_id,
+    action_id,
+    extra_channel_variables=None,
+):
+    vars_map = {
+        "TARGET_NUMBER": str(phone),
+        "SIP_TRUNK_ENDPOINT": endpoint,
+        "SIP_TRUNK_ID": trunk.id,
+        "BUSINESS_ID": trunk.business_id,
+        "SIP_TRUNK_HOST": trunk.host,
+        "SIP_TRUNK_PORT": trunk.port,
+        "SIP_TRUNK_TYPE": trunk.type,
+        "CALL_LOG_UUID": call_uuid,
+        "CALL_SESSION_ID": call_session_id,
+        "CALL_ACTION_ID": action_id,
+    }
+    if isinstance(extra_channel_variables, dict):
+        for key, value in extra_channel_variables.items():
+            if key and value is not None:
+                vars_map[str(key)] = value
+    return vars_map
 
 
 def originate_call(phone, channel_variables=None, action_id=None):
@@ -75,16 +110,86 @@ def _pick_min_load_trunk(trunks, realtime_enabled):
     return with_capacity[0], ranked
 
 
+def _count_active_sessions_for_business(business_id):
+    return (
+        CallSession.query.filter(
+            CallSession.business_id == int(business_id),
+            CallSession.status.in_(ACTIVE_CALL_SESSION_STATUSES),
+            CallSession.ended_at.is_(None),
+        )
+        .count()
+    )
+
+
+def _count_active_sessions_systemwide():
+    return (
+        CallSession.query.filter(
+            CallSession.status.in_(ACTIVE_CALL_SESSION_STATUSES),
+            CallSession.ended_at.is_(None),
+        )
+        .count()
+    )
+
+
+def _business_max_concurrent_calls(business):
+    raw = business.settings_json
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get("max_concurrent_calls")
+    if value is None:
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
 def originate_call_for_business(
     phone,
     business_id,
     sip_trunk_id,
     realtime_enabled,
     actor_user_id=None,
+    session_metadata=None,
+    extra_channel_variables=None,
 ):
     business = Business.query.get(int(business_id))
     if business is None:
         return None, "Business not found"
+
+    business_active_calls_before = _count_active_sessions_for_business(business_id)
+    business_max_concurrent = _business_max_concurrent_calls(business)
+    if (
+        business_max_concurrent is not None
+        and business_active_calls_before >= int(business_max_concurrent)
+    ):
+        return (
+            None,
+            "NO_BUSINESS_CAPACITY: No slot available for this business",
+        )
+
+    system_active_calls_before = _count_active_sessions_systemwide()
+    system_max_concurrent = int(getattr(ami_service, "system_max_concurrent", 0) or 0)
+    if system_max_concurrent <= 0:
+        # pull from flask config when available
+        try:
+            from flask import current_app
+
+            system_max_concurrent = int(current_app.config.get("SYSTEM_MAX_CONCURRENT_CALLS", 0) or 0)
+        except Exception:
+            system_max_concurrent = 0
+    if system_max_concurrent > 0 and system_active_calls_before >= system_max_concurrent:
+        return (
+            None,
+            "NO_SYSTEM_CAPACITY: No slot available at system capacity",
+        )
 
     trunk = None
     endpoint = None
@@ -154,6 +259,8 @@ def originate_call_for_business(
     action_id = str(uuid.uuid4())
     call_uuid = str(uuid.uuid4())
 
+    started_at = datetime.utcnow()
+
     call_log = CallLog(
         uuid=call_uuid,
         action_id=action_id,
@@ -164,33 +271,237 @@ def originate_call_for_business(
         to_number=str(phone),
         dialed_number=str(phone),
         status="queued",
-        started_at=datetime.utcnow(),
+        started_at=started_at,
     )
+    call_session = CallSession(
+        business_id=int(business_id),
+        flow_id=None,
+        flow_version_id=None,
+        campaign_id=None,
+        contact_id=None,
+        sip_trunk_id=trunk.id,
+        call_direction="outbound",
+        status="queued",
+        phone_number=str(phone),
+        caller_id=None,
+        channel=None,
+        uniqueid=None,
+        linkedid=None,
+        ami_action_id=action_id,
+        variables_json=None,
+        metadata_json=(json.dumps(session_metadata) if isinstance(session_metadata, dict) else None),
+        started_at=started_at,
+        answered_at=None,
+        ended_at=None,
+        hangup_cause=None,
+        created_by=actor_user_id,
+    )
+    db.session.add(call_session)
     db.session.add(call_log)
     db.session.commit()
 
+    channel_vars = _build_originate_channel_variables(
+        phone=phone,
+        trunk=trunk,
+        endpoint=endpoint,
+        call_uuid=call_uuid,
+        call_session_id=call_session.id,
+        action_id=action_id,
+        extra_channel_variables=extra_channel_variables,
+    )
+
     response = originate_call(
         phone,
-        channel_variables={
-            "SIP_TRUNK_ENDPOINT": endpoint,
-            "SIP_TRUNK_ID": trunk.id,
-            "BUSINESS_ID": trunk.business_id,
-            "SIP_TRUNK_HOST": trunk.host,
-            "SIP_TRUNK_PORT": trunk.port,
-            "SIP_TRUNK_TYPE": trunk.type,
-            "CALL_LOG_UUID": call_uuid,
-        },
+        channel_variables=channel_vars,
         action_id=action_id,
     )
     return {
         "ami_response": response,
         "call_log_uuid": call_uuid,
+        "call_session_id": call_session.id,
         "action_id": action_id,
         "sip_trunk_id": trunk.id,
         "sip_endpoint": endpoint,
         "selected_by": selected_by,
         "active_calls_before": active_calls_before,
         "max_concurrent_calls": trunk.max_concurrent_calls,
+        "business_active_calls_before": business_active_calls_before,
+        "business_max_concurrent_calls": business_max_concurrent,
+        "system_active_calls_before": system_active_calls_before,
+        "system_max_concurrent_calls": system_max_concurrent,
+    }, None
+
+
+def _parse_metadata_json(raw):
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def retry_call_session_for_business(
+    *,
+    source_call_session_id,
+    business_id,
+    realtime_enabled,
+    actor_user_id=None,
+    max_attempts=3,
+):
+    try:
+        normalized_source_id = int(source_call_session_id)
+    except (TypeError, ValueError):
+        return None, "Invalid call_session_id"
+
+    source = CallSession.query.filter_by(
+        id=normalized_source_id,
+        business_id=int(business_id),
+    ).first()
+    if source is None:
+        return None, "Call session not found"
+
+    if source.ended_at is None:
+        return None, "Call is still active; retry is only allowed for ended calls"
+
+    retryable_statuses = {"failed", "busy", "no_answer", "cancelled"}
+    if str(source.status or "").lower() not in retryable_statuses:
+        return None, "Call is not retry-eligible for its current status"
+
+    metadata = _parse_metadata_json(source.metadata_json)
+    retry_count = int(metadata.get("retry_count") or 0)
+    normalized_max_attempts = max(1, int(max_attempts or 3))
+    if retry_count >= normalized_max_attempts:
+        return None, "Retry attempts exceeded for this call session"
+
+    next_retry_count = retry_count + 1
+    session_metadata = {
+        "retry_of_call_session_id": source.id,
+        "retry_count": next_retry_count,
+    }
+    result, error = originate_call_for_business(
+        phone=source.phone_number,
+        business_id=business_id,
+        sip_trunk_id=source.sip_trunk_id,
+        realtime_enabled=realtime_enabled,
+        actor_user_id=actor_user_id,
+        session_metadata=session_metadata,
+        extra_channel_variables={
+            "RETRY_COUNT": next_retry_count,
+            "RETRY_OF_CALL_SESSION_ID": source.id,
+        },
+    )
+    if error:
+        return None, error
+    return {
+        **result,
+        "retry_of_call_session_id": source.id,
+        "retry_count": next_retry_count,
+    }, None
+
+
+def request_hangup_for_business(
+    *,
+    call_session_id,
+    business_id,
+    reason=None,
+    explicit_channel=None,
+):
+    try:
+        normalized_session_id = int(call_session_id)
+    except (TypeError, ValueError):
+        return None, "Invalid call_session_id"
+
+    call_session = CallSession.query.filter_by(
+        id=normalized_session_id,
+        business_id=int(business_id),
+    ).first()
+    if call_session is None:
+        return None, "Call session not found"
+
+    # Idempotent safety: already ended.
+    if call_session.ended_at is not None:
+        return {
+            "status": "already_ended",
+            "call_session_id": call_session.id,
+            "ended_at": call_session.ended_at.isoformat(),
+            "message": "Call already ended",
+        }, None
+
+    # Resolve live channel from explicit input, stored channel, uniqueid lookup,
+    # then a safe number-based fallback for early-call windows.
+    resolved_channel = str(explicit_channel or "").strip() or str(call_session.channel or "").strip()
+    if not resolved_channel:
+        row = find_live_channel_by_uniqueid(call_session.uniqueid, ami_service)
+        if row is not None:
+            resolved_channel = row.get("channel") or ""
+    if not resolved_channel:
+        linked_log = None
+        if call_session.ami_action_id:
+            linked_log = (
+                CallLog.query.filter(CallLog.action_id == str(call_session.ami_action_id))
+                .order_by(CallLog.id.desc())
+                .first()
+            )
+        if linked_log is None and call_session.uniqueid:
+            linked_log = (
+                CallLog.query.filter(CallLog.asterisk_uniqueid == str(call_session.uniqueid))
+                .order_by(CallLog.id.desc())
+                .first()
+            )
+        candidate_number = (
+            linked_log.to_number
+            if linked_log is not None and linked_log.to_number
+            else call_session.phone_number
+        )
+        number_match = find_live_channel_by_number(candidate_number, ami_service)
+        if number_match.get("ambiguous"):
+            return (
+                None,
+                f"Ambiguous live channel match for number fallback ({number_match.get('match_count')} matches); provide explicit channel",
+            )
+        row = number_match.get("channel_row")
+        if row is not None:
+            resolved_channel = row.get("channel") or ""
+
+    if not resolved_channel:
+        return None, "Live channel not found for this call session"
+
+    action_id = str(uuid.uuid4())
+    response = ami_service.hangup_channel(resolved_channel, action_id=action_id)
+
+    # Mark local status immediately as hangup request accepted.
+    call_session.status = "hangup"
+    call_session.channel = resolved_channel
+    if reason:
+        call_session.hangup_cause = str(reason)[:64]
+
+    linked_log = None
+    if call_session.ami_action_id:
+        linked_log = (
+            CallLog.query.filter(CallLog.action_id == str(call_session.ami_action_id))
+            .order_by(CallLog.id.desc())
+            .first()
+        )
+    if linked_log is None and call_session.uniqueid:
+        linked_log = (
+            CallLog.query.filter(CallLog.asterisk_uniqueid == str(call_session.uniqueid))
+            .order_by(CallLog.id.desc())
+            .first()
+        )
+    if linked_log is not None:
+        linked_log.status = "canceled"
+        if reason:
+            linked_log.hangup_cause_text = str(reason)[:255]
+
+    db.session.commit()
+    return {
+        "status": "hangup_requested",
+        "call_session_id": call_session.id,
+        "action_id": action_id,
+        "channel": resolved_channel,
+        "ami_response": response,
     }, None
 
 
@@ -478,6 +789,107 @@ def get_call_metrics(actor_user, filters):
         },
         "by_business": by_business,
         "by_trunk": by_trunk,
+    }, None
+
+
+def _serialize_audit_log(row):
+    metadata = {}
+    try:
+        parsed = json.loads(row.metadata_json or "{}")
+        if isinstance(parsed, dict):
+            metadata = parsed
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    return {
+        "id": row.id,
+        "business_id": row.business_id,
+        "actor_user_id": row.actor_user_id,
+        "action": row.action,
+        "metadata": metadata,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _parse_audit_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def list_call_audit_events(
+    actor_user,
+    call_session_id,
+    page=1,
+    page_size=20,
+    action=None,
+    date_from=None,
+    date_to=None,
+):
+    normalized_call_session_id = str(call_session_id or "").strip()
+    if not normalized_call_session_id:
+        return None, "Missing required query param: call_session_id"
+
+    allowed_ids = _allowed_business_ids_for_actor(actor_user)
+    query = AuditLog.query.filter(AuditLog.action.like("call.%"))
+    action = str(action or "").strip()
+    if action:
+        query = query.filter(AuditLog.action == action)
+
+    parsed_from = _parse_audit_dt(date_from)
+    if date_from and parsed_from is None:
+        return None, "Invalid date_from (expected ISO datetime)"
+    if parsed_from:
+        query = query.filter(AuditLog.created_at >= parsed_from)
+
+    parsed_to = _parse_audit_dt(date_to)
+    if date_to and parsed_to is None:
+        return None, "Invalid date_to (expected ISO datetime)"
+    if parsed_to:
+        query = query.filter(AuditLog.created_at <= parsed_to)
+
+    if allowed_ids is not None:
+        if not allowed_ids:
+            return {"items": [], "pagination": {"page": 1, "page_size": 20, "total": 0}}, None
+        query = query.filter(AuditLog.business_id.in_(allowed_ids))
+
+    # DB pre-filter by text, then strict JSON match in Python.
+    text_hint = f"%{normalized_call_session_id}%"
+    query = query.filter(AuditLog.metadata_json.ilike(text_hint))
+
+    try:
+        page = max(1, int(page or 1))
+        page_size = max(1, min(200, int(page_size or 20)))
+    except (TypeError, ValueError):
+        return None, "Invalid pagination params"
+
+    # Pull a bounded window for strict matching.
+    candidate_rows = (
+        query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(2000)
+        .all()
+    )
+
+    strict = []
+    for row in candidate_rows:
+        try:
+            parsed = json.loads(row.metadata_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if str(parsed.get("call_session_id") or parsed.get("source_call_session_id") or "") == normalized_call_session_id:
+            strict.append(row)
+
+    total = len(strict)
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = strict[start:end]
+    return {
+        "items": [_serialize_audit_log(item) for item in items],
+        "pagination": {"page": page, "page_size": page_size, "total": total},
     }, None
 
 

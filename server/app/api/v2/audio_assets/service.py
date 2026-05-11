@@ -425,6 +425,38 @@ def _guess_mimetype(audio_format):
     return "application/octet-stream"
 
 
+def resolve_playback_target_for_runtime_business(actor_business, asset_id):
+    try:
+        normalized_id = int(asset_id)
+    except (TypeError, ValueError):
+        return None, "Invalid audio_asset_id"
+
+    asset = AudioAsset.query.filter_by(
+        id=normalized_id,
+        business_id=actor_business.id,
+        is_deleted=False,
+    ).first()
+    if asset is None:
+        return None, "Audio asset not found for this business"
+    if (asset.status or "").strip().lower() == "deleted":
+        return None, "Audio asset is deleted"
+
+    path = Path(asset.file_path) if asset.file_path else None
+    if path is None or not path.exists() or not path.is_file():
+        return None, "Audio file not found"
+
+    # Playback() should receive a filename without extension.
+    playback_target = str(path)
+    if "." in playback_target:
+        playback_target = playback_target.rsplit(".", 1)[0]
+
+    return {
+        "audio_asset_id": asset.id,
+        "playback_target": playback_target,
+        "format": asset.format,
+    }, None
+
+
 def delete_audio_asset(actor_user, asset_id, delete_reason=None):
     asset = AudioAsset.query.get(asset_id)
     if asset is None:

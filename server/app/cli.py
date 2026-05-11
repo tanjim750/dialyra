@@ -9,6 +9,8 @@ from scripts import (
     migrate_business_owner_user_id,
     migrate_business_schema,
     migrate_audio_assets,
+    migrate_call_events,
+    migrate_call_sessions,
     migrate_call_logs,
     migrate_drop_user_business_id,
     migrate_roles,
@@ -171,19 +173,31 @@ def register_cli_commands(app):
         migrate_call_logs.ensure_indexes()
         migrate_call_logs.ensure_constraints()
         click.echo("  apply: call_logs schema step completed.")
-        click.echo("\n== Step 6: audio_assets schema ==")
+        click.echo("\n== Step 6: call_sessions schema ==")
+        migrate_call_sessions.apply_schema()
+        migrate_call_sessions.ensure_fk()
+        migrate_call_sessions.ensure_indexes()
+        migrate_call_sessions.ensure_constraints()
+        click.echo("  apply: call_sessions schema step completed.")
+        click.echo("\n== Step 7: call_events schema ==")
+        migrate_call_events.apply_schema()
+        migrate_call_events.ensure_fk()
+        migrate_call_events.ensure_indexes()
+        migrate_call_events.ensure_constraints()
+        click.echo("  apply: call_events schema step completed.")
+        click.echo("\n== Step 8: audio_assets schema ==")
         migrate_audio_assets.apply_schema()
         migrate_audio_assets.ensure_fk()
         migrate_audio_assets.ensure_indexes()
         migrate_audio_assets.ensure_constraints()
         click.echo("  apply: audio_assets schema step completed.")
-        click.echo("\n== Step 7: tts_requests schema ==")
+        click.echo("\n== Step 9: tts_requests schema ==")
         migrate_tts_requests.apply_schema()
         migrate_tts_requests.ensure_fk()
         migrate_tts_requests.ensure_indexes()
         migrate_tts_requests.ensure_constraints()
         click.echo("  apply: tts_requests schema step completed.")
-        click.echo("\n== Step 8: flow_engine schema ==")
+        click.echo("\n== Step 10: flow_engine schema ==")
         migrate_flow_engine.apply_schema()
         migrate_flow_engine.ensure_fk()
         migrate_flow_engine.ensure_indexes()
@@ -263,6 +277,44 @@ def register_cli_commands(app):
         migrate_call_logs.ensure_indexes()
         migrate_call_logs.ensure_constraints()
         click.echo("\nApply mode: call_logs schema updated successfully.")
+
+    @migrate_group.command("call-sessions")
+    @click.option("--apply", is_flag=True, default=False, help="Apply changes")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
+    def migrate_call_sessions_cmd(apply, dry_run):
+        effective_dry_run = (not apply) or dry_run
+        exists = migrate_call_sessions.table_exists()
+        columns = migrate_call_sessions.list_columns() if exists else set()
+        click.echo("Call sessions schema check:")
+        click.echo(f"  table_exists: {exists}")
+        click.echo(f"  columns: {len(columns)}")
+        if effective_dry_run:
+            click.echo("\nDry-run mode: no changes written.")
+            return
+        migrate_call_sessions.apply_schema()
+        migrate_call_sessions.ensure_fk()
+        migrate_call_sessions.ensure_indexes()
+        migrate_call_sessions.ensure_constraints()
+        click.echo("\nApply mode: call_sessions schema updated successfully.")
+
+    @migrate_group.command("call-events")
+    @click.option("--apply", is_flag=True, default=False, help="Apply changes")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview only")
+    def migrate_call_events_cmd(apply, dry_run):
+        effective_dry_run = (not apply) or dry_run
+        exists = migrate_call_events.table_exists()
+        columns = migrate_call_events.list_columns() if exists else set()
+        click.echo("Call events schema check:")
+        click.echo(f"  table_exists: {exists}")
+        click.echo(f"  columns: {len(columns)}")
+        if effective_dry_run:
+            click.echo("\nDry-run mode: no changes written.")
+            return
+        migrate_call_events.apply_schema()
+        migrate_call_events.ensure_fk()
+        migrate_call_events.ensure_indexes()
+        migrate_call_events.ensure_constraints()
+        click.echo("\nApply mode: call_events schema updated successfully.")
 
     @migrate_group.command("audio-assets")
     @click.option("--apply", is_flag=True, default=False, help="Apply changes")

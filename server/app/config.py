@@ -61,6 +61,9 @@ class Config:
     AMI_EVENT_RECONNECT_DELAY_SEC = float(
         os.getenv("AMI_EVENT_RECONNECT_DELAY_SEC", "2")
     )
+    # 0 means unlimited system-wide concurrent outbound calls.
+    SYSTEM_MAX_CONCURRENT_CALLS = int(os.getenv("SYSTEM_MAX_CONCURRENT_CALLS", "0"))
+    CALL_RETRY_MAX_ATTEMPTS = int(os.getenv("CALL_RETRY_MAX_ATTEMPTS", "3"))
     AUDIO_PLAYBACK_TEST_CHANNEL = os.getenv("AUDIO_PLAYBACK_TEST_CHANNEL", "")
     AUDIO_PLAYBACK_TEST_TIMEOUT_MS = int(os.getenv("AUDIO_PLAYBACK_TEST_TIMEOUT_MS", "10000"))
     PJSIP_CONFIG_PATH = os.getenv("PJSIP_CONFIG_PATH", "/app/asterisk/pjsip.conf")

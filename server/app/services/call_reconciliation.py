@@ -7,9 +7,10 @@ from typing import Any
 from sqlalchemy import text
 
 from app.extensions import db
-from app.models import CallLog
+from app.models import CallLog, CallSession
 
 FINAL_STATUSES = {"completed", "failed", "no_answer", "busy", "canceled"}
+SESSION_FINAL_STATUSES = {"completed", "failed", "no_answer", "busy", "cancelled", "hangup"}
 STATUS_RANK = {
     "queued": 0,
     "ringing": 1,
@@ -19,6 +20,8 @@ STATUS_RANK = {
     "no_answer": 3,
     "busy": 3,
     "canceled": 3,
+    "cancelled": 3,
+    "hangup": 3,
 }
 
 
@@ -122,6 +125,48 @@ def _find_call_log_for_cdr(row: dict[str, Any], window_start: datetime):
     return None
 
 
+def _to_session_status(call_log_status: str | None) -> str | None:
+    if call_log_status == "canceled":
+        return "cancelled"
+    return call_log_status
+
+
+def _find_call_session_for_call_log(call_log: CallLog):
+    if call_log.action_id:
+        row = (
+            CallSession.query.filter(CallSession.ami_action_id == str(call_log.action_id))
+            .order_by(CallSession.id.desc())
+            .first()
+        )
+        if row:
+            return row
+    if call_log.asterisk_uniqueid:
+        row = (
+            CallSession.query.filter(CallSession.uniqueid == str(call_log.asterisk_uniqueid))
+            .order_by(CallSession.id.desc())
+            .first()
+        )
+        if row:
+            return row
+    if call_log.linkedid:
+        row = (
+            CallSession.query.filter(CallSession.linkedid == str(call_log.linkedid))
+            .order_by(CallSession.id.desc())
+            .first()
+        )
+        if row:
+            return row
+    return (
+        CallSession.query.filter(
+            CallSession.business_id == call_log.business_id,
+            CallSession.sip_trunk_id == call_log.sip_trunk_id,
+            CallSession.phone_number == call_log.to_number,
+        )
+        .order_by(CallSession.id.desc())
+        .first()
+    )
+
+
 def reconcile_call_logs_from_cdr(*, hours_back: int = 24, limit: int = 5000, dry_run: bool = True):
     if not _table_exists("cdr"):
         return None, "cdr table not found"
@@ -175,7 +220,19 @@ def reconcile_call_logs_from_cdr(*, hours_back: int = 24, limit: int = 5000, dry
             continue
 
         stats.matched += 1
-        if call_log.status in FINAL_STATUSES and call_log.ended_at is not None:
+        call_session = _find_call_session_for_call_log(call_log)
+
+        if (
+            call_log.status in FINAL_STATUSES
+            and call_log.ended_at is not None
+            and (
+                call_session is None
+                or (
+                    call_session.status in SESSION_FINAL_STATUSES
+                    and call_session.ended_at is not None
+                )
+            )
+        ):
             stats.skipped_finalized += 1
             continue
 
@@ -224,6 +281,38 @@ def reconcile_call_logs_from_cdr(*, hours_back: int = 24, limit: int = 5000, dry
             if call_log.status != mapped_status:
                 call_log.status = mapped_status
                 changed = True
+
+        # Keep call_session in sync if we can correlate one.
+        if call_session is not None:
+            if call_log.action_id and call_session.ami_action_id != str(call_log.action_id):
+                call_session.ami_action_id = str(call_log.action_id)
+                changed = True
+            if call_log.asterisk_uniqueid and call_session.uniqueid != str(call_log.asterisk_uniqueid):
+                call_session.uniqueid = str(call_log.asterisk_uniqueid)
+                changed = True
+            if call_log.linkedid and call_session.linkedid != str(call_log.linkedid):
+                call_session.linkedid = str(call_log.linkedid)
+                changed = True
+
+            if started_at and call_session.started_at is None:
+                call_session.started_at = started_at
+                changed = True
+            if answered_at and call_session.answered_at is None:
+                call_session.answered_at = answered_at
+                changed = True
+            if ended_at and call_session.ended_at is None:
+                call_session.ended_at = ended_at
+                changed = True
+            if call_log.hangup_cause and not call_session.hangup_cause:
+                call_session.hangup_cause = call_log.hangup_cause
+                changed = True
+
+            mapped_session_status = _to_session_status(mapped_status)
+            if mapped_session_status:
+                if _should_upgrade_status(call_log.status, mapped_status):
+                    if call_session.status != mapped_session_status:
+                        call_session.status = mapped_session_status
+                        changed = True
 
         if changed:
             stats.updated += 1

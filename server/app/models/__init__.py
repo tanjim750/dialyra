@@ -3,6 +3,8 @@ from app.models.audio_asset import AudioAsset
 from app.models.business import Business
 from app.models.business_access_token import BusinessAccessToken
 from app.models.call_log import CallLog
+from app.models.call_event import CallEvent
+from app.models.call_session import CallSession
 from app.models.flow import Flow
 from app.models.flow_edge import FlowEdge
 from app.models.flow_node import FlowNode
@@ -21,6 +23,8 @@ __all__ = [
     "Business",
     "BusinessAccessToken",
     "CallLog",
+    "CallEvent",
+    "CallSession",
     "Flow",
     "FlowEdge",
     "FlowNode",
