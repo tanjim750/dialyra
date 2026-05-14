@@ -62,10 +62,10 @@ services:
       - "127.0.0.1:4573:4573"
     volumes:
       - ../:/app
-      - ../storage:/storage
-      - ../storage/audio:/data/audio
-      - ../storage/audio-assets:/data/audio-assets
-      - ../storage/recordings:/data/recordings
+      - ${DIALYRA_STORAGE_HOST_PATH:-../storage}:/storage
+      - ${DIALYRA_STORAGE_HOST_PATH:-../storage}/audio:/data/audio
+      - ${DIALYRA_STORAGE_HOST_PATH:-../storage}/audio-assets:/data/audio-assets
+      - ${DIALYRA_STORAGE_HOST_PATH:-../storage}/recordings:/data/recordings
     networks:
       - dialyra-net
 

@@ -1,7 +1,8 @@
 import json
+from pathlib import Path
 
 from app.extensions import db
-from app.models import Business, Flow, FlowEdge, FlowNode, FlowVersion, WorkspaceMembership
+from app.models import AudioAsset, Business, Flow, FlowEdge, FlowNode, FlowVersion, WorkspaceMembership
 from app.api.v2.tts.service import generate_tts_for_runtime_business
 
 VALID_FLOW_STATUSES = {"draft", "published", "archived", "disabled"}
@@ -46,8 +47,25 @@ def _materialize_tts_nodes_for_publish(actor_user, business, nodes_payload, node
         if node_type not in {"say_text", "tts"}:
             continue
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
-        if cfg.get("audio_asset_id"):
-            continue
+        existing_audio_asset_id = cfg.get("audio_asset_id")
+        if existing_audio_asset_id:
+            try:
+                asset_id = int(existing_audio_asset_id)
+            except (TypeError, ValueError):
+                asset_id = None
+            if asset_id is not None:
+                asset = AudioAsset.query.filter_by(
+                    id=asset_id,
+                    business_id=business.id,
+                    is_deleted=False,
+                ).first()
+                if asset is not None and str(asset.status or "").strip().lower() != "deleted":
+                    asset_path = Path(str(asset.file_path or "").strip())
+                    if asset_path.exists() and asset_path.is_file():
+                        continue
+            # Stale/missing asset reference; regenerate and rewrite node config.
+            cfg.pop("audio_asset_id", None)
+            cfg.pop("tts_request_id", None)
         text = str(cfg.get("text") or "").strip()
         if not text:
             continue

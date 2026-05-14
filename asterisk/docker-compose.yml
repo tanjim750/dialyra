@@ -55,10 +55,10 @@ services:
       - ../asterisk/sorcery.conf:/etc/asterisk/sorcery.conf
       - ../asterisk/extconfig.conf:/etc/asterisk/extconfig.conf
       - ../asterisk/res_pgsql.conf:/etc/asterisk/res_pgsql.conf
-      - ../storage:/storage
+      - ${DIALYRA_STORAGE_HOST_PATH:-../storage}:/storage
       - ../asterisk/var/lib/asterisk/sounds:/var/lib/asterisk/sounds
-      - ../storage/audio-assets:/data/audio-assets
-      - ../storage/recordings:/var/spool/asterisk/monitor
+      - ${DIALYRA_STORAGE_HOST_PATH:-../storage}/audio-assets:/data/audio-assets
+      - ${DIALYRA_STORAGE_HOST_PATH:-../storage}/recordings:/var/spool/asterisk/monitor
       - ../asterisk/var/log/asterisk:/var/log/asterisk
     depends_on:
       db:
