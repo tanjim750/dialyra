@@ -449,6 +449,11 @@ def resolve_playback_target_for_runtime_business(actor_business, asset_id):
     raw_obj = Path(raw_path)
     if raw_obj.is_absolute():
         candidates.append(raw_obj)
+        # Backward-compatibility: Flask service may have saved absolute /app/storage paths
+        # while Asterisk sees the shared bind as /storage.
+        app_storage_prefix = "/app/storage/"
+        if raw_path.startswith(app_storage_prefix):
+            candidates.append(Path("/storage") / raw_path[len(app_storage_prefix):])
     else:
         candidates.append(raw_obj)
         # Resolve relative paths against current configured storage root.
