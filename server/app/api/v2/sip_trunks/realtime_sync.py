@@ -96,6 +96,24 @@ def _table_exists(conn, table_name):
     return row is not None
 
 
+def _column_exists(conn, table_name, column_name):
+    schema = (current_app.config.get("SIP_REALTIME_SCHEMA") or "public").strip()
+    row = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema=:schema
+              AND table_name=:table
+              AND column_name=:column
+            LIMIT 1
+            """
+        ),
+        {"schema": schema, "table": table_name, "column": column_name},
+    ).first()
+    return row is not None
+
+
 def ensure_realtime_ready():
     required = [
         "ps_endpoints",
@@ -131,6 +149,8 @@ def upsert_trunk(trunk):
     )
 
     with _realtime_conn(write=True) as conn:
+        has_dtmf_mode = _column_exists(conn, "ps_endpoints", "dtmf_mode")
+
         conn.execute(
             text(
                 f"""
@@ -154,32 +174,59 @@ def upsert_trunk(trunk):
             "outbound_auth": ids["auth"] if needs_auth else "",
         }
 
-        conn.execute(
-            text(
-                f"""
-                INSERT INTO {ps_endpoints}
-                (id, transport, aors, auth, outbound_auth, context, disallow, allow, from_user, from_domain, direct_media, rtp_symmetric, force_rport, rewrite_contact, dtmf_mode)
-                VALUES
-                (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes', 'auto')
-                ON CONFLICT (id) DO UPDATE SET
-                  transport=EXCLUDED.transport,
-                  aors=EXCLUDED.aors,
-                  auth=EXCLUDED.auth,
-                  outbound_auth=EXCLUDED.outbound_auth,
-                  context=EXCLUDED.context,
-                  disallow=EXCLUDED.disallow,
-                  allow=EXCLUDED.allow,
-                  from_user=EXCLUDED.from_user,
-                  from_domain=EXCLUDED.from_domain,
-                  direct_media=EXCLUDED.direct_media,
-                  rtp_symmetric=EXCLUDED.rtp_symmetric,
-                  force_rport=EXCLUDED.force_rport,
-                  rewrite_contact=EXCLUDED.rewrite_contact,
-                  dtmf_mode=EXCLUDED.dtmf_mode
-                """
-            ),
-            endpoint_params,
-        )
+        if has_dtmf_mode:
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO {ps_endpoints}
+                    (id, transport, aors, auth, outbound_auth, context, disallow, allow, from_user, from_domain, direct_media, rtp_symmetric, force_rport, rewrite_contact, dtmf_mode)
+                    VALUES
+                    (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes', 'auto')
+                    ON CONFLICT (id) DO UPDATE SET
+                      transport=EXCLUDED.transport,
+                      aors=EXCLUDED.aors,
+                      auth=EXCLUDED.auth,
+                      outbound_auth=EXCLUDED.outbound_auth,
+                      context=EXCLUDED.context,
+                      disallow=EXCLUDED.disallow,
+                      allow=EXCLUDED.allow,
+                      from_user=EXCLUDED.from_user,
+                      from_domain=EXCLUDED.from_domain,
+                      direct_media=EXCLUDED.direct_media,
+                      rtp_symmetric=EXCLUDED.rtp_symmetric,
+                      force_rport=EXCLUDED.force_rport,
+                      rewrite_contact=EXCLUDED.rewrite_contact,
+                      dtmf_mode=EXCLUDED.dtmf_mode
+                    """
+                ),
+                endpoint_params,
+            )
+        else:
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO {ps_endpoints}
+                    (id, transport, aors, auth, outbound_auth, context, disallow, allow, from_user, from_domain, direct_media, rtp_symmetric, force_rport, rewrite_contact)
+                    VALUES
+                    (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes')
+                    ON CONFLICT (id) DO UPDATE SET
+                      transport=EXCLUDED.transport,
+                      aors=EXCLUDED.aors,
+                      auth=EXCLUDED.auth,
+                      outbound_auth=EXCLUDED.outbound_auth,
+                      context=EXCLUDED.context,
+                      disallow=EXCLUDED.disallow,
+                      allow=EXCLUDED.allow,
+                      from_user=EXCLUDED.from_user,
+                      from_domain=EXCLUDED.from_domain,
+                      direct_media=EXCLUDED.direct_media,
+                      rtp_symmetric=EXCLUDED.rtp_symmetric,
+                      force_rport=EXCLUDED.force_rport,
+                      rewrite_contact=EXCLUDED.rewrite_contact
+                    """
+                ),
+                endpoint_params,
+            )
 
         if needs_auth:
             conn.execute(
