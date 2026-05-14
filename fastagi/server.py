@@ -86,12 +86,33 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         safe = str(value).replace('"', "")
         return self._send_agi(f'SET VARIABLE {key} "{safe}"')
 
-    def _stream_file(self, filename):
+    def _parse_agi_result_code(self, raw):
+        marker = "result="
+        if marker not in raw:
+            return None
+        value = raw.split(marker, 1)[1].strip()
+        if " " in value:
+            value = value.split(" ", 1)[0]
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    def _stream_file(self, filename, escape_digits=""):
         safe = self._normalize_playback_target(filename)
         if not safe:
             # No default prompt fallback dependency (e.g. silence/1) to avoid missing-file aborts.
-            return "200 result=0"
-        return self._send_agi(f"STREAM FILE {safe} \"\"")
+            return ""
+        escaped = str(escape_digits or "").replace('"', "")
+        raw = self._send_agi(f'STREAM FILE {safe} "{escaped}"')
+        code = self._parse_agi_result_code(raw)
+        # STREAM FILE returns ASCII code of pressed digit when interrupted.
+        if code is None or code <= 0:
+            return ""
+        try:
+            return chr(code)
+        except ValueError:
+            return ""
 
     def _get_data(self, filename, timeout_ms, max_digits):
         safe_file = str(filename).strip() or "silence/1"
@@ -257,7 +278,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                     self._verbose(f"FastAGI playback-target lookup failed asset_id={asset_id} error={exc}", 1)
                     playback_target = ""
             self._verbose(f"FastAGI action=play_audio_asset asset_id={asset_id} target={playback_target or '(none)'}", 1)
-            self._stream_file(playback_target)
+            barged_digit = self._stream_file(playback_target, escape_digits="0123456789*#")
             self._post_runtime_event(
                 call_session_id,
                 "playback-event",
@@ -269,6 +290,14 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                 },
                 call_context,
             )
+            if barged_digit:
+                self._post_runtime_event(
+                    call_session_id,
+                    "dtmf",
+                    {"digits": barged_digit, "trace_id": trace_id},
+                    call_context,
+                )
+                return {"result_type": "dtmf", "value": barged_digit}
             return {"result_type": "completed"}
 
         if action_type == "collect_dtmf":
