@@ -63,6 +63,7 @@ services:
         required: false
     volumes:
       - ../:/app
+      - ../storage:/storage
       - ../storage/audio:/data/audio
       - ../storage/audio-assets:/data/audio-assets
       - ../storage/recordings:/data/recordings

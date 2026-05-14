@@ -441,12 +441,32 @@ def resolve_playback_target_for_runtime_business(actor_business, asset_id):
     if (asset.status or "").strip().lower() == "deleted":
         return None, "Audio asset is deleted"
 
-    path = Path(asset.file_path) if asset.file_path else None
-    if path is None or not path.exists() or not path.is_file():
+    raw_path = str(asset.file_path or "").strip()
+    if not raw_path:
+        return None, "Audio file not found"
+
+    candidates = []
+    raw_obj = Path(raw_path)
+    if raw_obj.is_absolute():
+        candidates.append(raw_obj)
+    else:
+        candidates.append(raw_obj)
+        # Resolve relative paths against current configured storage root.
+        candidates.append(_storage_root() / raw_obj)
+        # Backward-compatibility for previously stored relative paths:
+        # storage/audio/<business>/...
+        legacy_prefixes = ("storage/audio/", "storage/audio-assets/")
+        for prefix in legacy_prefixes:
+            if raw_path.startswith(prefix):
+                suffix = raw_path[len(prefix):]
+                candidates.append(_storage_root() / suffix)
+
+    path = next((p for p in candidates if p.exists() and p.is_file()), None)
+    if path is None:
         return None, "Audio file not found"
 
     # Playback() should receive a filename without extension.
-    playback_target = str(path)
+    playback_target = str(path.resolve())
     if "." in playback_target:
         playback_target = playback_target.rsplit(".", 1)[0]
 

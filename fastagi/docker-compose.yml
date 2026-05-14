@@ -62,6 +62,7 @@ services:
       - "127.0.0.1:4573:4573"
     volumes:
       - ../:/app
+      - ../storage:/storage
       - ../storage/audio:/data/audio
       - ../storage/audio-assets:/data/audio-assets
       - ../storage/recordings:/data/recordings
