@@ -57,6 +57,7 @@ services:
       - ../asterisk/res_pgsql.conf:/etc/asterisk/res_pgsql.conf
       - ../storage/audio:/var/lib/asterisk/sounds/custom
       - ../storage/recordings:/var/spool/asterisk/monitor
+      - ../asterisk/var/log/asterisk:/var/log/asterisk
     depends_on:
       db:
         condition: service_started
