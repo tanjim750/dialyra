@@ -470,8 +470,19 @@ def resolve_playback_target_for_runtime_business(actor_business, asset_id):
     if path is None:
         return None, "Audio file not found"
 
-    # Playback() should receive a filename without extension.
+    # Playback() should receive a container-visible filename without extension.
     playback_target = str(path.resolve())
+    host_storage_root = str(current_app.config.get("AUDIO_ASSETS_ROOT", "")).strip()
+    if host_storage_root:
+        # If DB path was resolved from host-mounted absolute root (e.g. /root/storage/audio),
+        # map to the shared in-container mountpoint used by Asterisk (/storage).
+        host_root = Path(host_storage_root).resolve()
+        host_root_parent = host_root.parent if host_root.name == "audio" else host_root
+        host_prefix = str(host_root_parent)
+        if host_prefix and playback_target.startswith(host_prefix + "/"):
+            playback_target = "/storage/" + playback_target[len(host_prefix) + 1 :]
+        elif playback_target == host_prefix:
+            playback_target = "/storage"
     if "." in playback_target:
         playback_target = playback_target.rsplit(".", 1)[0]
 
