@@ -43,6 +43,16 @@ def _api_get(path, extra_headers=None):
 
 
 class FastAGIHandler(socketserver.StreamRequestHandler):
+    def _normalize_playback_target(self, target):
+        value = str(target or "").strip()
+        if not value:
+            return ""
+        # Flask may store absolute paths under /app/storage; Asterisk container
+        # uses shared bind at /storage.
+        if value.startswith("/app/storage/"):
+            return "/storage/" + value[len("/app/storage/"):]
+        return value
+
     def _read_agi_env(self):
         agi_env = {}
         while True:
@@ -77,7 +87,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         return self._send_agi(f'SET VARIABLE {key} "{safe}"')
 
     def _stream_file(self, filename):
-        safe = str(filename).strip()
+        safe = self._normalize_playback_target(filename)
         if not safe:
             # No default prompt fallback dependency (e.g. silence/1) to avoid missing-file aborts.
             return "200 result=0"
@@ -242,7 +252,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                         f"/api/v2/internal/audio-assets/{asset_id}/playback-target",
                         extra_headers=self._internal_headers(call_context),
                     )
-                    playback_target = str(payload.get("playback_target") or playback_target)
+                    playback_target = self._normalize_playback_target(payload.get("playback_target"))
                 except Exception as exc:
                     self._verbose(f"FastAGI playback-target lookup failed asset_id={asset_id} error={exc}", 1)
                     playback_target = ""
