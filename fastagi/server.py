@@ -43,6 +43,12 @@ def _api_get(path, extra_headers=None):
 
 
 class FastAGIHandler(socketserver.StreamRequestHandler):
+    def _get_pending_dtmf(self):
+        return str(getattr(self, "_pending_dtmf", "") or "")
+
+    def _set_pending_dtmf(self, value):
+        self._pending_dtmf = str(value or "")
+
     def _normalize_playback_target(self, target):
         value = str(target or "").strip()
         if not value:
@@ -291,17 +297,26 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                 call_context,
             )
             if barged_digit:
-                self._post_runtime_event(
-                    call_session_id,
-                    "dtmf",
-                    {"digits": barged_digit, "trace_id": trace_id},
-                    call_context,
-                )
-                return {"result_type": "dtmf", "value": barged_digit}
+                # Buffer barge-in digit so the next collect_dtmf action can consume it.
+                # Emitting dtmf result here may be interpreted against the say_text node
+                # rather than the gather_input node, causing false invalid_input transitions.
+                self._set_pending_dtmf(barged_digit)
+                self._verbose(f"FastAGI buffered barge-in digit={barged_digit}", 1)
             return {"result_type": "completed"}
 
         if action_type == "collect_dtmf":
             self._verbose("FastAGI action=collect_dtmf", 1)
+            pending = self._get_pending_dtmf()
+            if pending:
+                digits = pending[: max(1, int(action.get("max_digits") or 1))]
+                self._set_pending_dtmf("")
+                self._post_runtime_event(
+                    call_session_id,
+                    "dtmf",
+                    {"digits": digits, "trace_id": trace_id},
+                    call_context,
+                )
+                return {"result_type": "dtmf", "value": digits}
             timeout_ms = int(action.get("timeout_seconds") or 5) * 1000
             max_digits = max(1, int(action.get("max_digits") or 1))
             digits = ""
