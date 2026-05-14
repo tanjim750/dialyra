@@ -95,6 +95,27 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return ""
         return value
 
+    def _wait_for_digit(self, timeout_ms):
+        timeout_ms = max(1000, int(timeout_ms))
+        raw = self._send_agi(f"WAIT FOR DIGIT {timeout_ms}")
+        marker = "result="
+        if marker not in raw:
+            return ""
+        value = raw.split(marker, 1)[1].strip()
+        if " " in value:
+            value = value.split(" ", 1)[0]
+        try:
+            code = int(value)
+        except ValueError:
+            return ""
+        # -1: hangup/error, 0: timeout
+        if code <= 0:
+            return ""
+        try:
+            return chr(code)
+        except ValueError:
+            return ""
+
     def _internal_headers(self, call_context):
         headers = {}
         business_id = call_context.get("business_id")
@@ -230,7 +251,14 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return {"result_type": "completed"}
 
         if action_type == "collect_dtmf":
-            digits = self._get_data("silence/1", int(action.get("timeout_seconds") or 5) * 1000, int(action.get("max_digits") or 1))
+            timeout_ms = int(action.get("timeout_seconds") or 5) * 1000
+            max_digits = max(1, int(action.get("max_digits") or 1))
+            digits = ""
+            for _ in range(max_digits):
+                digit = self._wait_for_digit(timeout_ms)
+                if not digit:
+                    break
+                digits += digit
             if digits:
                 self._post_runtime_event(
                     call_session_id,

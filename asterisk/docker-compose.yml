@@ -56,6 +56,7 @@ services:
       - ../asterisk/extconfig.conf:/etc/asterisk/extconfig.conf
       - ../asterisk/res_pgsql.conf:/etc/asterisk/res_pgsql.conf
       - ../asterisk/var/lib/asterisk/sounds:/var/lib/asterisk/sounds
+      - ../storage/audio-assets:/data/audio-assets
       - ../storage/recordings:/var/spool/asterisk/monitor
       - ../asterisk/var/log/asterisk:/var/log/asterisk
     depends_on:

@@ -63,6 +63,7 @@ services:
     volumes:
       - ../:/app
       - ../storage/audio:/data/audio
+      - ../storage/audio-assets:/data/audio-assets
       - ../storage/recordings:/data/recordings
     networks:
       - dialyra-net
