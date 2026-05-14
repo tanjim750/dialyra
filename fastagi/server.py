@@ -77,7 +77,10 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         return self._send_agi(f'SET VARIABLE {key} "{safe}"')
 
     def _stream_file(self, filename):
-        safe = str(filename).strip() or "silence/1"
+        safe = str(filename).strip()
+        if not safe:
+            # No default prompt fallback dependency (e.g. silence/1) to avoid missing-file aborts.
+            return "200 result=0"
         return self._send_agi(f"STREAM FILE {safe} \"\"")
 
     def _get_data(self, filename, timeout_ms, max_digits):
@@ -134,6 +137,10 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         )
 
     def _resolve_next(self, payload, call_context):
+        self._verbose(
+            f"FastAGI resolve-next call_session_id={payload.get('call_session_id')} flow_id={payload.get('flow_id')} flow_version_id={payload.get('flow_version_id')}",
+            1,
+        )
         return _api_post(
             "/api/v2/internal/flow/resolve-next",
             payload,
@@ -219,14 +226,16 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         action_type = str((action or {}).get("type") or "").strip().lower()
 
         if action_type in {"noop", "legacy_fallback"}:
+            self._verbose(f"FastAGI action={action_type}", 1)
             return {"result_type": "completed"}
         if action_type == "hangup":
+            self._verbose("FastAGI action=hangup", 1)
             self._hangup()
             return {"terminal": True, "result_type": "completed"}
 
         if action_type == "play_audio_asset":
             asset_id = action.get("audio_asset_id")
-            playback_target = "silence/1"
+            playback_target = ""
             if asset_id is not None:
                 try:
                     payload = _api_get(
@@ -234,8 +243,10 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                         extra_headers=self._internal_headers(call_context),
                     )
                     playback_target = str(payload.get("playback_target") or playback_target)
-                except Exception:
-                    playback_target = "silence/1"
+                except Exception as exc:
+                    self._verbose(f"FastAGI playback-target lookup failed asset_id={asset_id} error={exc}", 1)
+                    playback_target = ""
+            self._verbose(f"FastAGI action=play_audio_asset asset_id={asset_id} target={playback_target or '(none)'}", 1)
             self._stream_file(playback_target)
             self._post_runtime_event(
                 call_session_id,
@@ -251,6 +262,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return {"result_type": "completed"}
 
         if action_type == "collect_dtmf":
+            self._verbose("FastAGI action=collect_dtmf", 1)
             timeout_ms = int(action.get("timeout_seconds") or 5) * 1000
             max_digits = max(1, int(action.get("max_digits") or 1))
             digits = ""
@@ -270,6 +282,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return {"result_type": "timeout"}
 
         if action_type == "wait":
+            self._verbose("FastAGI action=wait", 1)
             duration = max(1, int(action.get("duration_seconds") or 1))
             self._send_agi(f"WAIT FOR DIGIT {duration * 1000}")
             self._post_runtime_event(
@@ -281,12 +294,14 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return {"result_type": "completed"}
 
         if action_type == "set_variable":
+            self._verbose("FastAGI action=set_variable", 1)
             key = str(action.get("key") or "").strip()
             if key:
                 self._set_variable(key, action.get("value") if action.get("value") is not None else "")
             return {"result_type": "completed"}
 
         if action_type == "transfer_call":
+            self._verbose("FastAGI action=transfer_call(not_implemented)", 1)
             self._post_runtime_event(
                 call_session_id,
                 "transfer-event",
@@ -296,6 +311,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return {"result_type": "transfer_failed"}
 
         if action_type == "record_control":
+            self._verbose("FastAGI action=record_control", 1)
             mapped = {
                 "start": "recording_started",
                 "stop": "recording_stopped",
@@ -349,6 +365,10 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                 resolved = self._resolve_next(req, context)
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
+                self._verbose(
+                    f"FastAGI resolve-next HTTP error status={exc.code} body={body[:180]}",
+                    1,
+                )
                 self._safe_emit_runtime_error(
                     payload["call_session_id"],
                     trace_id,
@@ -359,6 +379,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                 self._hangup()
                 return
             except Exception as exc:
+                self._verbose(f"FastAGI resolve-next error: {exc}", 1)
                 self._safe_emit_runtime_error(
                     payload["call_session_id"],
                     trace_id,
@@ -370,6 +391,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                 return
 
             action = (resolved or {}).get("runtime_action") or {}
+            self._verbose(f"FastAGI resolved action type={action.get('type')}", 1)
             handled = self._handle_runtime_action(context, action, trace_id)
             if handled.get("terminal"):
                 return
