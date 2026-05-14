@@ -112,6 +112,21 @@ def _render_tts_text_template(text: str, variables: dict | None) -> str:
     return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", _replace, text or "")
 
 
+def _is_cache_asset_reusable(*, asset, business_id: int) -> bool:
+    if asset is None:
+        return False
+    if int(getattr(asset, "business_id", 0) or 0) != int(business_id):
+        return False
+    if bool(getattr(asset, "is_deleted", False)):
+        return False
+    if str(getattr(asset, "status", "") or "").strip().lower() != "ready":
+        return False
+    path = Path(getattr(asset, "file_path", "") or "")
+    if not path.exists() or not path.is_file():
+        return False
+    return True
+
+
 def _extract_template_variable_keys(text: str) -> list[str]:
     keys = []
     for match in re.finditer(r"\{\{\s*([^{}]+?)\s*\}\}", text or ""):
@@ -283,11 +298,7 @@ def _prepare_tts_request(actor_user, payload):
     )
     if cached is not None and cached.audio_asset_id is not None:
         cached_asset = AudioAsset.query.get(cached.audio_asset_id)
-        if (
-            cached_asset is not None
-            and not cached_asset.is_deleted
-            and cached_asset.status == "ready"
-        ):
+        if _is_cache_asset_reusable(asset=cached_asset, business_id=business.id):
             row = TTSRequest(
                 uuid=str(uuid.uuid4()),
                 business_id=business.id,
@@ -506,7 +517,7 @@ def generate_tts_for_runtime_business(business, payload, variables=None, created
     )
     if cached is not None and cached.audio_asset_id is not None:
         cached_asset = AudioAsset.query.get(cached.audio_asset_id)
-        if cached_asset is not None and not cached_asset.is_deleted and cached_asset.status == "ready":
+        if _is_cache_asset_reusable(asset=cached_asset, business_id=business.id):
             return {
                 "source": "cache_hit",
                 "audio_asset_id": cached.audio_asset_id,
