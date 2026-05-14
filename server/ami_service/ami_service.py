@@ -82,15 +82,15 @@ class AMIService:
             for key, value in channel_variables.items():
                 if value is None:
                     continue
-                variable_lines += f"Variable: {key}={value}\r\n"
+                # Use inherited channel vars so values survive Local -> PJSIP leg.
+                variable_lines += f"Variable: __{key}={value}\r\n"
 
         action = (
             f"Action: Originate\r\n"
             f"ActionID: {action_id}\r\n"
-            f"Channel: Local/{phone_number}@outbound\r\n"
-            f"Context: outbound\r\n"
-            f"Exten: {phone_number}\r\n"
-            f"Priority: 1\r\n"
+            f"Channel: Local/{phone_number}@outbound/n\r\n"
+            f"Application: Wait\r\n"
+            f"Data: 3600\r\n"
             f"CallerID: Dialyra <1000>\r\n"
             f"{variable_lines}"
             f"Async: true\r\n\r\n"
