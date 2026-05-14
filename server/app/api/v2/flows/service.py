@@ -2,6 +2,7 @@ import json
 
 from app.extensions import db
 from app.models import Business, Flow, FlowEdge, FlowNode, FlowVersion, WorkspaceMembership
+from app.api.v2.tts.service import generate_tts_for_runtime_business
 
 VALID_FLOW_STATUSES = {"draft", "published", "archived", "disabled"}
 VALID_NODE_TYPES = {
@@ -33,6 +34,57 @@ VALID_CONDITION_TYPES = {
     "transfer_failed",
     "error",
 }
+
+
+def _materialize_tts_nodes_for_publish(actor_user, business, nodes_payload, node_rows_by_id=None):
+    if not isinstance(nodes_payload, list):
+        return None
+    for node in nodes_payload:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("node_type") or "").strip().lower()
+        if node_type not in {"say_text", "tts"}:
+            continue
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if cfg.get("audio_asset_id"):
+            continue
+        text = str(cfg.get("text") or "").strip()
+        if not text:
+            continue
+        tts_payload = {
+            "text": text,
+            "provider": cfg.get("provider"),
+            "provider_variant": cfg.get("provider_variant"),
+            "language": cfg.get("language"),
+            "voice": cfg.get("voice"),
+            "node_config": cfg,
+            "node": node,
+        }
+        variables = cfg.get("variables") if isinstance(cfg.get("variables"), dict) else None
+        tts_result, tts_error = generate_tts_for_runtime_business(
+            business,
+            tts_payload,
+            variables=variables,
+            created_by=actor_user.id,
+        )
+        if tts_error:
+            return f"TTS pre-generation failed for node '{node.get('node_key') or node.get('id')}': {tts_error}"
+        cfg["audio_asset_id"] = tts_result.get("audio_asset_id")
+        if tts_result.get("tts_request_id") is not None:
+            cfg["tts_request_id"] = tts_result.get("tts_request_id")
+        if tts_result.get("source"):
+            cfg["tts_source"] = tts_result.get("source")
+        node["config"] = cfg
+        node_id = node.get("id")
+        if node_rows_by_id and node_id is not None:
+            try:
+                normalized_node_id = int(node_id)
+            except (TypeError, ValueError):
+                normalized_node_id = None
+            if normalized_node_id is not None and normalized_node_id in node_rows_by_id:
+                row = node_rows_by_id[normalized_node_id]
+                row.config_json = json.dumps(cfg)
+    return None
 
 
 def _append_node_error(out, code, message, node_id=None):
@@ -515,7 +567,17 @@ def create_and_publish_flow(actor_user, payload):
             return None, f"Flow validation failed: {json.dumps(validation, ensure_ascii=False)}"
 
         nodes, edges = _load_flow_graph(flow.id)
-        nodes_payload_out = [_serialize_node(n) for n in sorted(nodes, key=lambda x: x.id)]
+        sorted_nodes = sorted(nodes, key=lambda x: x.id)
+        nodes_payload_out = [_serialize_node(n) for n in sorted_nodes]
+        node_rows_by_id = {n.id: n for n in sorted_nodes}
+        materialize_error = _materialize_tts_nodes_for_publish(
+            actor_user,
+            business,
+            nodes_payload_out,
+            node_rows_by_id=node_rows_by_id,
+        )
+        if materialize_error:
+            return None, materialize_error
         edges_payload_out = [_serialize_edge(e) for e in sorted(edges, key=lambda x: (x.priority, x.id))]
 
         max_version = (
@@ -845,7 +907,21 @@ def publish_flow(actor_user, flow_id):
         return None, "Flow validation failed"
 
     nodes, edges = _load_flow_graph(flow.id)
-    nodes_payload = [_serialize_node(n) for n in sorted(nodes, key=lambda x: x.id)]
+    sorted_nodes = sorted(nodes, key=lambda x: x.id)
+    nodes_payload = [_serialize_node(n) for n in sorted_nodes]
+    node_rows_by_id = {n.id: n for n in sorted_nodes}
+    business = Business.query.get(flow.business_id)
+    if business is None:
+        return None, "Business not found"
+    materialize_error = _materialize_tts_nodes_for_publish(
+        actor_user,
+        business,
+        nodes_payload,
+        node_rows_by_id=node_rows_by_id,
+    )
+    if materialize_error:
+        db.session.rollback()
+        return None, materialize_error
     edges_payload = [_serialize_edge(e) for e in sorted(edges, key=lambda x: (x.priority, x.id))]
 
     max_version = (
