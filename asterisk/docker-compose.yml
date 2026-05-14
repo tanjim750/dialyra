@@ -55,7 +55,7 @@ services:
       - ../asterisk/sorcery.conf:/etc/asterisk/sorcery.conf
       - ../asterisk/extconfig.conf:/etc/asterisk/extconfig.conf
       - ../asterisk/res_pgsql.conf:/etc/asterisk/res_pgsql.conf
-      - ../storage/audio:/var/lib/asterisk/sounds/custom
+      - ../asterisk/var/lib/asterisk/sounds:/var/lib/asterisk/sounds
       - ../storage/recordings:/var/spool/asterisk/monitor
       - ../asterisk/var/log/asterisk:/var/log/asterisk
     depends_on:
