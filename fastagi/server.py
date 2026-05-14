@@ -8,7 +8,7 @@ import uuid
 
 INTERNAL_BASE_URL = os.getenv("FASTAGI_INTERNAL_BASE_URL", "http://dialyra-flask:5000")
 INTERNAL_TOKEN = os.getenv("FASTAGI_INTERNAL_ACCESS_TOKEN", "").strip()
-REQUEST_TIMEOUT_SEC = float(os.getenv("FASTAGI_INTERNAL_TIMEOUT_SEC", "5"))
+REQUEST_TIMEOUT_SEC = float(os.getenv("FASTAGI_INTERNAL_TIMEOUT_SEC", "30"))
 MAX_RUNTIME_STEPS = int(os.getenv("FASTAGI_MAX_RUNTIME_STEPS", "32"))
 
 
