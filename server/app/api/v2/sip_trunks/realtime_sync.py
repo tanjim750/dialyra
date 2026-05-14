@@ -158,17 +158,24 @@ def upsert_trunk(trunk):
             text(
                 f"""
                 INSERT INTO {ps_endpoints}
-                (id, transport, aors, auth, outbound_auth, context, disallow, allow, from_user, from_domain, direct_media, rtp_symmetric, force_rport, rewrite_contact)
+                (id, transport, aors, auth, outbound_auth, context, disallow, allow, from_user, from_domain, direct_media, rtp_symmetric, force_rport, rewrite_contact, dtmf_mode)
                 VALUES
-                (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes')
+                (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes', 'auto')
                 ON CONFLICT (id) DO UPDATE SET
                   transport=EXCLUDED.transport,
                   aors=EXCLUDED.aors,
                   auth=EXCLUDED.auth,
                   outbound_auth=EXCLUDED.outbound_auth,
                   context=EXCLUDED.context,
+                  disallow=EXCLUDED.disallow,
+                  allow=EXCLUDED.allow,
                   from_user=EXCLUDED.from_user,
-                  from_domain=EXCLUDED.from_domain
+                  from_domain=EXCLUDED.from_domain,
+                  direct_media=EXCLUDED.direct_media,
+                  rtp_symmetric=EXCLUDED.rtp_symmetric,
+                  force_rport=EXCLUDED.force_rport,
+                  rewrite_contact=EXCLUDED.rewrite_contact,
+                  dtmf_mode=EXCLUDED.dtmf_mode
                 """
             ),
             endpoint_params,
