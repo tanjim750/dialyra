@@ -181,7 +181,7 @@ def upsert_trunk(trunk):
                     INSERT INTO {ps_endpoints}
                     (id, transport, aors, auth, outbound_auth, context, disallow, allow, from_user, from_domain, direct_media, rtp_symmetric, force_rport, rewrite_contact, dtmf_mode)
                     VALUES
-                    (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes', 'auto')
+                    (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes', 'auto_info')
                     ON CONFLICT (id) DO UPDATE SET
                       transport=EXCLUDED.transport,
                       aors=EXCLUDED.aors,
