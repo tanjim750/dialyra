@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from app.extensions import db
 from app.models import CallEvent, CallLog, CallSession
+from app.services.call_reconciliation import apply_cdr_truth_for_call
 
 
 INVALID_ID_TOKENS = {"", "unknown", "<unknown>", "none", "null", "n/a"}
@@ -531,6 +532,10 @@ def process_call_event(payload, business_id=None):
                     seconds=payload_billsec
                 )
             call_session.hangup_cause = str(_value(payload, "Cause", "cause") or "")
+
+        # Finalize with CDR truth when available. AMI updates remain provisional.
+        if call_log is not None:
+            apply_cdr_truth_for_call(call_log, call_session)
 
     _apply_answered_invariant(call_log, call_session, now)
 

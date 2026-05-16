@@ -198,6 +198,153 @@ def _find_call_session_for_call_log(call_log: CallLog):
     )
 
 
+def _coerce_dt(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def _to_int_or_none(value):
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _fetch_best_cdr_row_for_call(call_log: CallLog):
+    if not _table_exists("cdr"):
+        return None
+    cdr_columns = _columns_for("cdr")
+    if not cdr_columns:
+        return None
+
+    time_col = "start" if "start" in cdr_columns else "calldate" if "calldate" in cdr_columns else None
+    if time_col is None:
+        return None
+
+    select_cols = [c for c in ["uniqueid", "linkedid", "src", "dst", "disposition", "duration", "billsec", "start", "answer", "end", "calldate"] if c in cdr_columns]
+    if not select_cols:
+        return None
+
+    window_start = (call_log.started_at or datetime.utcnow()) - timedelta(hours=6)
+    window_end = (call_log.started_at or datetime.utcnow()) + timedelta(hours=6)
+
+    # 1) strict uniqueid
+    if call_log.asterisk_uniqueid and "uniqueid" in cdr_columns:
+        sql = f"""
+            SELECT {", ".join(select_cols)}
+            FROM cdr
+            WHERE uniqueid = :uniqueid
+            ORDER BY {time_col} DESC
+            LIMIT 1
+        """
+        row = db.session.execute(text(sql), {"uniqueid": str(call_log.asterisk_uniqueid)}).mappings().first()
+        if row:
+            return dict(row)
+
+    # 2) linkedid
+    if call_log.linkedid and "linkedid" in cdr_columns:
+        sql = f"""
+            SELECT {", ".join(select_cols)}
+            FROM cdr
+            WHERE linkedid = :linkedid
+            ORDER BY {time_col} DESC
+            LIMIT 1
+        """
+        row = db.session.execute(text(sql), {"linkedid": str(call_log.linkedid)}).mappings().first()
+        if row:
+            return dict(row)
+
+    # 3) fallback dst + time window
+    if call_log.to_number and "dst" in cdr_columns:
+        sql = f"""
+            SELECT {", ".join(select_cols)}
+            FROM cdr
+            WHERE dst = :dst
+              AND {time_col} BETWEEN :window_start AND :window_end
+            ORDER BY {time_col} DESC
+            LIMIT 1
+        """
+        row = db.session.execute(
+            text(sql),
+            {"dst": str(call_log.to_number), "window_start": window_start, "window_end": window_end},
+        ).mappings().first()
+        if row:
+            return dict(row)
+
+    return None
+
+
+def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None = None) -> bool:
+    """
+    Finalize call records from CDR as source of truth.
+    Returns True when a CDR row is applied.
+    """
+    cdr_row = _fetch_best_cdr_row_for_call(call_log)
+    if not cdr_row:
+        return False
+
+    if call_session is None:
+        call_session = _find_call_session_for_call_log(call_log)
+
+    uniqueid = _normalize_identifier(cdr_row.get("uniqueid"))
+    linkedid = _normalize_identifier(cdr_row.get("linkedid"))
+    src = _first_non_empty(cdr_row.get("src"))
+    dst = _first_non_empty(cdr_row.get("dst"))
+    started_at = _coerce_dt(_first_non_empty(cdr_row.get("start"), cdr_row.get("calldate")))
+    answered_at = _coerce_dt(cdr_row.get("answer"))
+    ended_at = _coerce_dt(cdr_row.get("end"))
+    duration = _to_int_or_none(cdr_row.get("duration"))
+    billsec = _to_int_or_none(cdr_row.get("billsec"))
+    mapped_status = _map_disposition_to_status(_first_non_empty(cdr_row.get("disposition")))
+
+    if uniqueid:
+        call_log.asterisk_uniqueid = uniqueid
+    if linkedid:
+        call_log.linkedid = linkedid
+    if src:
+        call_log.from_number = str(src)
+    if dst:
+        call_log.to_number = str(dst)
+    if started_at:
+        call_log.started_at = started_at
+    if answered_at:
+        call_log.answered_at = answered_at
+    if ended_at:
+        call_log.ended_at = ended_at
+    if duration is not None:
+        call_log.duration_sec = duration
+    if billsec is not None:
+        call_log.billsec = billsec
+    if mapped_status:
+        call_log.status = mapped_status
+
+    if call_session is not None:
+        if uniqueid:
+            call_session.uniqueid = uniqueid
+        if linkedid:
+            call_session.linkedid = linkedid
+        if started_at:
+            call_session.started_at = started_at
+        if answered_at:
+            call_session.answered_at = answered_at
+        if ended_at:
+            call_session.ended_at = ended_at
+        if mapped_status:
+            call_session.status = _to_session_status(mapped_status)
+
+    _apply_answered_invariant(call_log, call_session)
+    return True
+
+
 def reconcile_call_logs_from_cdr(*, hours_back: int = 24, limit: int = 5000, dry_run: bool = True):
     if not _table_exists("cdr"):
         return None, "cdr table not found"
