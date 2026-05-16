@@ -80,7 +80,6 @@ def make_call():
         ), 502
 
 
-@bp.post("/calls/originate")
 @bp.post("/runtime/calls/originate")
 @access_token_context_required("calls:originate")
 def originate_call_runtime():
@@ -250,7 +249,6 @@ def originate_call_runtime():
         return jsonify({"error": "Failed to connect to AMI", "details": str(exc)}), 502
 
 
-@bp.post("/calls/<string:call_id>/hangup")
 @bp.post("/runtime/calls/<string:call_id>/hangup")
 @access_token_context_required("calls:hangup")
 def hangup_call_runtime(call_id):
@@ -317,7 +315,6 @@ def hangup_call_runtime(call_id):
         return jsonify({"error": "Failed to connect to AMI", "details": str(exc)}), 502
 
 
-@bp.post("/calls/<string:call_id>/retry")
 @bp.post("/runtime/calls/<string:call_id>/retry")
 @access_token_context_required("calls:originate")
 def retry_call_runtime(call_id):
@@ -407,6 +404,26 @@ def get_call_runtime(call_id):
             "status": "not_implemented",
         }
     ), 200
+
+
+@bp.get("/runtime/calls/events")
+@access_token_context_required("calls:read")
+def list_runtime_call_events_endpoint():
+    status = request.args.get("status")
+    page = request.args.get("page", 1)
+    page_size = request.args.get("page_size", 20)
+    try:
+        result, error = list_call_events(
+            business_id=g.actor_business.id,
+            status=status,
+            page=int(page),
+            page_size=int(page_size),
+        )
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid pagination params"}), 400
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify(result), 200
 
 
 @bp.get("/calls/history")

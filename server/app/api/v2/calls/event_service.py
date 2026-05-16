@@ -6,6 +6,33 @@ from app.extensions import db
 from app.models import CallEvent, CallLog, CallSession
 
 
+def _digits_only(value):
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _phone_matches(value, target):
+    left = _digits_only(value)
+    right = _digits_only(target)
+    if not left or not right:
+        return False
+    # Accept exact or suffix match to handle country-prefix differences.
+    return left == right or left.endswith(right) or right.endswith(left)
+
+
+def _extract_channel_digits(payload):
+    candidates = [
+        _value(payload, "Channel", "channel"),
+        _value(payload, "DestChannel", "destchannel"),
+        _value(payload, "ConnectedLineNum", "connectedlinenum"),
+        _value(payload, "CallerIDNum", "calleridnum"),
+    ]
+    for value in candidates:
+        digits = _digits_only(value)
+        if digits:
+            return digits
+    return ""
+
+
 def _value(payload, *keys):
     for key in keys:
         if key in payload and payload.get(key) not in (None, ""):
@@ -98,6 +125,15 @@ def _find_call_log(payload, business_id=None):
         row = query.filter(CallLog.linkedid == str(linkedid)).order_by(CallLog.id.desc()).first()
         if row:
             return row
+    channel_digits = _extract_channel_digits(payload)
+    if channel_digits:
+        # Conservative fallback: correlate by recent destination/caller numbers.
+        recent_rows = query.order_by(CallLog.id.desc()).limit(50).all()
+        for row in recent_rows:
+            if _phone_matches(row.to_number, channel_digits) or _phone_matches(
+                row.dialed_number, channel_digits
+            ) or _phone_matches(row.from_number, channel_digits):
+                return row
     return None
 
 
@@ -122,6 +158,13 @@ def _find_call_session(payload, business_id=None):
         row = query.filter(CallSession.linkedid == str(linkedid)).order_by(CallSession.id.desc()).first()
         if row:
             return row
+    channel_digits = _extract_channel_digits(payload)
+    if channel_digits:
+        # Conservative fallback: correlate by recent phone number.
+        recent_rows = query.order_by(CallSession.id.desc()).limit(50).all()
+        for row in recent_rows:
+            if _phone_matches(row.phone_number, channel_digits):
+                return row
     return None
 
 
