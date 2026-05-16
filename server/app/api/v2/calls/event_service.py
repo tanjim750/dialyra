@@ -1,5 +1,6 @@
 import json
 import hashlib
+import time
 from datetime import datetime, timedelta
 
 from app.extensions import db
@@ -144,6 +145,17 @@ def _apply_answered_invariant(call_log, call_session, now):
     if call_session is not None:
         if str(call_session.status or "").strip().lower() in answered_statuses and call_session.answered_at is None:
             call_session.answered_at = now
+
+
+def _finalize_from_cdr_with_retry(call_log, call_session, attempts=6, delay_sec=0.5):
+    """
+    CDR rows can arrive slightly after Hangup; retry briefly to finalize deterministically.
+    """
+    for _ in range(max(1, int(attempts))):
+        if apply_cdr_truth_for_call(call_log, call_session):
+            return True
+        time.sleep(max(0.0, float(delay_sec)))
+    return False
 
 
 def _should_upgrade_status(current_status, candidate_status):
@@ -533,9 +545,9 @@ def process_call_event(payload, business_id=None):
                 )
             call_session.hangup_cause = str(_value(payload, "Cause", "cause") or "")
 
-        # Finalize with CDR truth when available. AMI updates remain provisional.
+        # Finalize with CDR truth at hangup-time; retry to absorb CDR write lag.
         if call_log is not None:
-            apply_cdr_truth_for_call(call_log, call_session)
+            _finalize_from_cdr_with_retry(call_log, call_session)
 
     _apply_answered_invariant(call_log, call_session, now)
 

@@ -20,6 +20,7 @@ from app.models import (
     FlowVersion,
     SipTrunk,
 )
+from app.services.call_reconciliation import apply_cdr_truth_for_call
 from sqlalchemy import case, func
 
 
@@ -1005,8 +1006,21 @@ def get_call_history_by_id(actor_user, call_id):
     if allowed_ids is not None and row.business_id not in allowed_ids:
         return None, "Insufficient permission for this business"
 
-    payload = _serialize_call_log(row)
     call_session = _resolve_call_session_for_log(row)
+    # Safety net: if AMI correlation missed final leg, finalize from CDR on read.
+    should_try_cdr_finalize = (
+        row.ended_at is None
+        or row.answered_at is None
+        or row.asterisk_uniqueid in (None, "", "unknown", "<unknown>")
+        or row.billsec is None
+    )
+    if should_try_cdr_finalize:
+        if apply_cdr_truth_for_call(row, call_session):
+            db.session.commit()
+            # Refresh correlated session view after reconciliation update.
+            call_session = _resolve_call_session_for_log(row)
+
+    payload = _serialize_call_log(row)
     timeline = _build_call_timeline(row, call_session)
     payload["timeline"] = timeline
     payload = _reconcile_call_history_payload(payload, call_session, timeline)
