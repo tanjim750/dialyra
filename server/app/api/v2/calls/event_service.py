@@ -6,6 +6,9 @@ from app.extensions import db
 from app.models import CallEvent, CallLog, CallSession
 
 
+INVALID_ID_TOKENS = {"", "unknown", "<unknown>", "none", "null", "n/a"}
+
+
 def _digits_only(value):
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
@@ -106,6 +109,30 @@ def _value(payload, *keys):
     return None
 
 
+def _normalize_identifier(value):
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in INVALID_ID_TOKENS:
+        return None
+    return text
+
+
+def _apply_answered_invariant(call_log, call_session, now):
+    """
+    Keep timestamps consistent with answered-like status.
+    """
+    answered_statuses = {"answered", "completed"}
+    if call_log is not None:
+        if str(call_log.status or "").strip().lower() in answered_statuses and call_log.answered_at is None:
+            call_log.answered_at = now
+    if call_session is not None:
+        if str(call_session.status or "").strip().lower() in answered_statuses and call_session.answered_at is None:
+            call_session.answered_at = now
+
+
 def _resolve_status(event_name, payload):
     event_name = (event_name or "").strip()
     if event_name == "OriginateResponse":
@@ -166,9 +193,11 @@ def _event_fingerprint(payload):
 
 
 def _find_call_log(payload, business_id=None):
-    action_id = _value(payload, "ActionID", "actionid")
-    uniqueid = _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
-    linkedid = _value(payload, "Linkedid", "LinkedID", "linkedid")
+    action_id = _normalize_identifier(_value(payload, "ActionID", "actionid"))
+    uniqueid = _normalize_identifier(
+        _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
+    )
+    linkedid = _normalize_identifier(_value(payload, "Linkedid", "LinkedID", "linkedid"))
 
     query = CallLog.query
     if business_id is not None:
@@ -199,9 +228,11 @@ def _find_call_log(payload, business_id=None):
 
 
 def _find_call_session(payload, business_id=None):
-    action_id = _value(payload, "ActionID", "actionid")
-    uniqueid = _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
-    linkedid = _value(payload, "Linkedid", "LinkedID", "linkedid")
+    action_id = _normalize_identifier(_value(payload, "ActionID", "actionid"))
+    uniqueid = _normalize_identifier(
+        _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
+    )
+    linkedid = _normalize_identifier(_value(payload, "Linkedid", "LinkedID", "linkedid"))
 
     query = CallSession.query
     if business_id is not None:
@@ -296,9 +327,11 @@ def process_call_event(payload, business_id=None):
     if not event_name:
         return None, "Missing event name"
 
-    action_id = _value(payload, "ActionID", "actionid")
-    uniqueid = _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
-    linkedid = _value(payload, "Linkedid", "LinkedID", "linkedid")
+    action_id = _normalize_identifier(_value(payload, "ActionID", "actionid"))
+    uniqueid = _normalize_identifier(
+        _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
+    )
+    linkedid = _normalize_identifier(_value(payload, "Linkedid", "LinkedID", "linkedid"))
     event_fp = _event_fingerprint(payload)
 
     existing_event = (
@@ -349,9 +382,9 @@ def process_call_event(payload, business_id=None):
             event_name=str(event_name),
             event_fingerprint=event_fp,
             event_payload_json=json.dumps(payload),
-            action_id=str(action_id) if action_id else None,
-            uniqueid=str(uniqueid) if uniqueid else None,
-            linkedid=str(linkedid) if linkedid else None,
+            action_id=action_id,
+            uniqueid=uniqueid,
+            linkedid=linkedid,
             processing_status="failed",
             process_attempts=1,
             last_error="Call correlation failed",
@@ -372,9 +405,9 @@ def process_call_event(payload, business_id=None):
         event_name=str(event_name),
         event_fingerprint=event_fp,
         event_payload_json=json.dumps(payload),
-        action_id=str(action_id) if action_id else None,
-        uniqueid=str(uniqueid) if uniqueid else None,
-        linkedid=str(linkedid) if linkedid else None,
+        action_id=action_id,
+        uniqueid=uniqueid,
+        linkedid=linkedid,
         processing_status="pending",
         process_attempts=0,
     )
@@ -383,20 +416,20 @@ def process_call_event(payload, business_id=None):
 
     # Backfill correlation ids if missing.
     if call_log is not None:
-        if action_id and not call_log.action_id:
-            call_log.action_id = str(action_id)
-        if uniqueid and not call_log.asterisk_uniqueid:
-            call_log.asterisk_uniqueid = str(uniqueid)
-        if linkedid and not call_log.linkedid:
-            call_log.linkedid = str(linkedid)
+        if action_id and not _normalize_identifier(call_log.action_id):
+            call_log.action_id = action_id
+        if uniqueid and not _normalize_identifier(call_log.asterisk_uniqueid):
+            call_log.asterisk_uniqueid = uniqueid
+        if linkedid and not _normalize_identifier(call_log.linkedid):
+            call_log.linkedid = linkedid
 
     if call_session is not None:
-        if action_id and not call_session.ami_action_id:
-            call_session.ami_action_id = str(action_id)
-        if uniqueid and not call_session.uniqueid:
-            call_session.uniqueid = str(uniqueid)
-        if linkedid and not call_session.linkedid:
-            call_session.linkedid = str(linkedid)
+        if action_id and not _normalize_identifier(call_session.ami_action_id):
+            call_session.ami_action_id = action_id
+        if uniqueid and not _normalize_identifier(call_session.uniqueid):
+            call_session.uniqueid = uniqueid
+        if linkedid and not _normalize_identifier(call_session.linkedid):
+            call_session.linkedid = linkedid
         _remember_channels(call_session, payload)
 
     new_status = _resolve_status(str(event_name), payload)
@@ -449,6 +482,9 @@ def process_call_event(payload, business_id=None):
                     call_log.answered_at = call_log.ended_at - timedelta(seconds=payload_billsec)
             elif call_log.answered_at and call_log.ended_at:
                 call_log.billsec = int((call_log.ended_at - call_log.answered_at).total_seconds())
+            if call_log.billsec is None and call_log.duration_sec is not None:
+                # Keep a safe fallback when AMI payload omits billable fields.
+                call_log.billsec = max(0, int(call_log.duration_sec))
             call_log.hangup_cause = str(_value(payload, "Cause", "cause") or "")
             call_log.hangup_cause_text = str(
                 _value(payload, "Cause-txt", "CauseTxt", "cause_txt") or ""
@@ -467,6 +503,8 @@ def process_call_event(payload, business_id=None):
                     seconds=payload_billsec
                 )
             call_session.hangup_cause = str(_value(payload, "Cause", "cause") or "")
+
+    _apply_answered_invariant(call_log, call_session, now)
 
     if call_log is not None:
         call_log.raw_event_json = json.dumps(payload)

@@ -11,6 +11,7 @@ from app.models import CallLog, CallSession
 
 FINAL_STATUSES = {"completed", "failed", "no_answer", "busy", "canceled"}
 SESSION_FINAL_STATUSES = {"completed", "failed", "no_answer", "busy", "cancelled", "hangup"}
+INVALID_ID_TOKENS = {"", "unknown", "<unknown>", "none", "null", "n/a"}
 STATUS_RANK = {
     "queued": 0,
     "ringing": 1,
@@ -98,9 +99,39 @@ def _first_non_empty(*values):
     return None
 
 
+def _normalize_identifier(value):
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in INVALID_ID_TOKENS:
+        return None
+    return text
+
+
+def _apply_answered_invariant(call_log: CallLog, call_session: CallSession | None):
+    answered_statuses = {"answered", "completed"}
+    if (
+        str(call_log.status or "").strip().lower() in answered_statuses
+        and call_log.answered_at is None
+        and call_log.ended_at is not None
+    ):
+        call_log.answered_at = call_log.ended_at
+
+    if call_session is not None:
+        if (
+            str(call_session.status or "").strip().lower() in answered_statuses
+            and call_session.answered_at is None
+        ):
+            call_session.answered_at = (
+                call_log.answered_at or call_session.ended_at or call_log.ended_at
+            )
+
+
 def _find_call_log_for_cdr(row: dict[str, Any], window_start: datetime):
-    uniqueid = _first_non_empty(row.get("uniqueid"), row.get("unique_id"))
-    linkedid = _first_non_empty(row.get("linkedid"), row.get("linked_id"))
+    uniqueid = _normalize_identifier(_first_non_empty(row.get("uniqueid"), row.get("unique_id")))
+    linkedid = _normalize_identifier(_first_non_empty(row.get("linkedid"), row.get("linked_id")))
     dst = _first_non_empty(row.get("dst"), row.get("destination"))
     start_dt = _first_non_empty(row.get("start"), row.get("calldate"), row.get("start_time"))
 
@@ -237,8 +268,8 @@ def reconcile_call_logs_from_cdr(*, hours_back: int = 24, limit: int = 5000, dry
             continue
 
         changed = False
-        uniqueid = _first_non_empty(cdr_row.get("uniqueid"))
-        linkedid = _first_non_empty(cdr_row.get("linkedid"))
+        uniqueid = _normalize_identifier(_first_non_empty(cdr_row.get("uniqueid")))
+        linkedid = _normalize_identifier(_first_non_empty(cdr_row.get("linkedid")))
         src = _first_non_empty(cdr_row.get("src"))
         dst = _first_non_empty(cdr_row.get("dst"))
         disposition = _first_non_empty(cdr_row.get("disposition"))
@@ -274,6 +305,9 @@ def reconcile_call_logs_from_cdr(*, hours_back: int = 24, limit: int = 5000, dry
             changed = True
         if billsec is not None and (call_log.billsec is None or int(billsec) > int(call_log.billsec or 0)):
             call_log.billsec = int(billsec)
+            changed = True
+        if call_log.billsec is None and call_log.answered_at and call_log.ended_at:
+            call_log.billsec = max(0, int((call_log.ended_at - call_log.answered_at).total_seconds()))
             changed = True
 
         mapped_status = _map_disposition_to_status(disposition)
@@ -313,6 +347,18 @@ def reconcile_call_logs_from_cdr(*, hours_back: int = 24, limit: int = 5000, dry
                     if call_session.status != mapped_session_status:
                         call_session.status = mapped_session_status
                         changed = True
+
+        before_answered = (
+            call_log.answered_at,
+            call_session.answered_at if call_session is not None else None,
+        )
+        _apply_answered_invariant(call_log, call_session)
+        after_answered = (
+            call_log.answered_at,
+            call_session.answered_at if call_session is not None else None,
+        )
+        if before_answered != after_answered:
+            changed = True
 
         if changed:
             stats.updated += 1
