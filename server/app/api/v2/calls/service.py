@@ -15,7 +15,7 @@ from sqlalchemy import case, func
 
 
 ami_service = AMIService()
-ACTIVE_CALL_SESSION_STATUSES = {"queued", "initiating", "ringing", "answered", "hangup"}
+ACTIVE_CALL_SESSION_STATUSES = {"queued", "initiating", "ringing", "answered"}
 
 
 def _slug(value):
@@ -139,6 +139,43 @@ def _count_active_sessions_systemwide():
         )
         .count()
     )
+
+
+def _cleanup_stale_active_sessions():
+    """
+    Close stale active sessions that were never finalized by event processing.
+    This prevents false NO_SYSTEM_CAPACITY / NO_BUSINESS_CAPACITY blocks.
+    """
+    try:
+        from flask import current_app
+
+        timeout_minutes = int(
+            current_app.config.get("CALL_SESSION_STALE_TIMEOUT_MINUTES", 15) or 15
+        )
+    except Exception:
+        timeout_minutes = 15
+    timeout_minutes = max(1, timeout_minutes)
+    cutoff = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+
+    stale_rows = (
+        CallSession.query.filter(
+            CallSession.status.in_(ACTIVE_CALL_SESSION_STATUSES),
+            CallSession.ended_at.is_(None),
+            CallSession.started_at.isnot(None),
+            CallSession.started_at < cutoff,
+        )
+        .all()
+    )
+    if not stale_rows:
+        return 0
+
+    now = datetime.utcnow()
+    for row in stale_rows:
+        row.status = "failed"
+        row.hangup_cause = row.hangup_cause or "stale_session_timeout"
+        row.ended_at = now
+    db.session.commit()
+    return len(stale_rows)
 
 
 def _business_max_concurrent_calls(business):
@@ -267,6 +304,9 @@ def originate_call_for_business(
     )
     if flow_selected_by.startswith("INVALID_") or flow_selected_by.startswith("NO_FLOW_AVAILABLE"):
         return None, flow_selected_by
+
+    # First reconcile stale sessions so capacity checks reflect real availability.
+    _cleanup_stale_active_sessions()
 
     business_active_calls_before = _count_active_sessions_for_business(business_id)
     business_max_concurrent = _business_max_concurrent_calls(business)

@@ -1,6 +1,7 @@
 import socket
 
 from flask import Blueprint, current_app, g, jsonify, request
+from app.api.v2.calls.event_service import list_call_events
 from app.api.v2.calls.schemas import validate_originate_payload
 from app.api.v2.calls.service import (
     ami_service,
@@ -80,6 +81,7 @@ def make_call():
 
 
 @bp.post("/calls/originate")
+@bp.post("/runtime/calls/originate")
 @access_token_context_required("calls:originate")
 def originate_call_runtime():
     payload = request.get_json(silent=True)
@@ -249,6 +251,7 @@ def originate_call_runtime():
 
 
 @bp.post("/calls/<string:call_id>/hangup")
+@bp.post("/runtime/calls/<string:call_id>/hangup")
 @access_token_context_required("calls:hangup")
 def hangup_call_runtime(call_id):
     payload = request.get_json(silent=True) or {}
@@ -315,6 +318,7 @@ def hangup_call_runtime(call_id):
 
 
 @bp.post("/calls/<string:call_id>/retry")
+@bp.post("/runtime/calls/<string:call_id>/retry")
 @access_token_context_required("calls:originate")
 def retry_call_runtime(call_id):
     try:
@@ -379,6 +383,7 @@ def retry_call_runtime(call_id):
 
 
 @bp.get("/calls")
+@bp.get("/runtime/calls")
 @access_token_context_required("calls:read")
 def list_calls_runtime():
     return jsonify(
@@ -391,6 +396,7 @@ def list_calls_runtime():
 
 
 @bp.get("/calls/<string:call_id>")
+@bp.get("/runtime/calls/<string:call_id>")
 @access_token_context_required("calls:read")
 def get_call_runtime(call_id):
     return jsonify(
@@ -480,4 +486,29 @@ def list_call_audit_events_endpoint():
     if error:
         status = 403 if "permission" in error.lower() else 400
         return jsonify({"error": error}), status
+    return jsonify(result), 200
+
+
+@bp.get("/calls/events")
+@jwt_context_required
+@require_stuff_or_superuser
+def list_call_events_endpoint():
+    business_id = request.args.get("business_id")
+    status = request.args.get("status")
+    page = request.args.get("page", 1)
+    page_size = request.args.get("page_size", 20)
+
+    # If business_id is omitted, restrict by actor business for safer defaults.
+    effective_business_id = business_id or (
+        g.actor_business.id if getattr(g, "actor_business", None) else None
+    )
+    result, error = list_call_events(
+        business_id=effective_business_id,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+    if error:
+        http_status = 403 if "permission" in error.lower() else 400
+        return jsonify({"error": error}), http_status
     return jsonify(result), 200

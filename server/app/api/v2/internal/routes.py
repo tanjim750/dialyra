@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from functools import wraps
 from flask import Blueprint, current_app, g, jsonify, request
+from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 
 from app.api.v2.calls.event_service import (
     list_call_events,
@@ -12,7 +13,7 @@ from app.api.v2.calls.event_service import (
 )
 from app.api.v2.audio_assets.service import resolve_playback_target_for_runtime_business
 from app.api.v2.flows.runtime_service import append_runtime_event, get_runtime_state, resolve_next_runtime
-from app.models import Business, BusinessAccessToken, CallSession, FlowRuntimeSession
+from app.models import Business, BusinessAccessToken, CallSession, FlowRuntimeSession, User, WorkspaceMembership
 from app.services.fastagi_call_token import verify_fastagi_call_token
 
 bp = Blueprint("internal_v2", __name__, url_prefix="/api/v2/internal")
@@ -126,6 +127,44 @@ def _call_token_or_access_token_required(*required_scopes):
                     raw_token = auth_header.split(" ", 1)[1].strip()
             if not raw_token:
                 return jsonify({"error": "Missing access token"}), 401
+
+            # If bearer token looks like JWT, authenticate as platform user.
+            if str(raw_token).count(".") == 2:
+                try:
+                    verify_jwt_in_request()
+                except Exception:  # noqa: BLE001
+                    return jsonify({"error": "Invalid JWT token"}), 401
+                user_id = get_jwt_identity()
+                if user_id is None:
+                    return jsonify({"error": "Actor user not found"}), 404
+                actor_user = User.query.get(int(user_id))
+                if actor_user is None:
+                    return jsonify({"error": "Actor user not found"}), 404
+                if actor_user.role not in {"stuff", "superuser"}:
+                    return jsonify({"error": "Stuff or superuser role required"}), 403
+
+                business, business_error = _resolve_internal_business(required_scope_set, kwargs)
+                if business_error:
+                    return jsonify({"error": business_error}), 400 if "Missing business context" in business_error else 404 if business_error == "Business not found" else 400
+
+                if actor_user.role != "superuser":
+                    if business is None:
+                        return jsonify({"error": "Business context is required"}), 400
+                    membership = WorkspaceMembership.query.filter_by(
+                        user_id=actor_user.id,
+                        business_id=business.id,
+                        status="active",
+                    ).first()
+                    if membership is None:
+                        return jsonify({"error": "Business membership is not active"}), 403
+
+                g.auth_type = "jwt"
+                g.actor_user = actor_user
+                g.actor_business = business
+                g.access_token = None
+                g.scopes = sorted(required_scope_set)
+                return fn(*args, **kwargs)
+
             token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
             token_model = BusinessAccessToken.query.filter_by(token_hash=token_hash).first()
             if token_model is None:
