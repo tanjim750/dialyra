@@ -1,6 +1,7 @@
 import json
 import os
 import socketserver
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -10,6 +11,8 @@ INTERNAL_BASE_URL = os.getenv("FASTAGI_INTERNAL_BASE_URL", "http://dialyra-flask
 INTERNAL_TOKEN = os.getenv("FASTAGI_INTERNAL_ACCESS_TOKEN", "").strip()
 REQUEST_TIMEOUT_SEC = float(os.getenv("FASTAGI_INTERNAL_TIMEOUT_SEC", "30"))
 MAX_RUNTIME_STEPS = int(os.getenv("FASTAGI_MAX_RUNTIME_STEPS", "32"))
+DTMF_GRACE_MS = max(100, int(os.getenv("FASTAGI_DTMF_GRACE_MS", "1200")))
+DTMF_TIMEOUT_RETRY_MS = max(100, int(os.getenv("FASTAGI_DTMF_TIMEOUT_RETRY_MS", "900")))
 
 
 def _json_dumps(data):
@@ -48,6 +51,19 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
 
     def _set_pending_dtmf(self, value):
         self._pending_dtmf = str(value or "")
+        self._pending_dtmf_set_ms = int(time.time() * 1000)
+
+    def _now_ms(self):
+        return int(time.time() * 1000)
+
+    def _mark_playback_end(self):
+        self._last_playback_end_ms = self._now_ms()
+
+    def _last_playback_age_ms(self):
+        last = int(getattr(self, "_last_playback_end_ms", 0) or 0)
+        if not last:
+            return 10**9
+        return max(0, self._now_ms() - last)
 
     def _normalize_playback_target(self, target):
         value = str(target or "").strip()
@@ -155,6 +171,12 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return chr(code)
         except ValueError:
             return ""
+
+    def _normalize_digit(self, digit):
+        value = str(digit or "")
+        if value in "0123456789*#":
+            return value
+        return ""
 
     def _internal_headers(self, call_context):
         headers = {}
@@ -285,6 +307,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                     playback_target = ""
             self._verbose(f"FastAGI action=play_audio_asset asset_id={asset_id} target={playback_target or '(none)'}", 1)
             barged_digit = self._stream_file(playback_target, escape_digits="0123456789*#")
+            self._mark_playback_end()
             self._post_runtime_event(
                 call_session_id,
                 "playback-event",
@@ -300,8 +323,15 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                 # Buffer barge-in digit so the next collect_dtmf action can consume it.
                 # Emitting dtmf result here may be interpreted against the say_text node
                 # rather than the gather_input node, causing false invalid_input transitions.
-                self._set_pending_dtmf(barged_digit)
-                self._verbose(f"FastAGI buffered barge-in digit={barged_digit}", 1)
+                normalized = self._normalize_digit(barged_digit)
+                if normalized:
+                    self._set_pending_dtmf(normalized)
+                    self._verbose(
+                        f"FastAGI buffered barge-in digit={normalized} playback_age_ms={self._last_playback_age_ms()}",
+                        1,
+                    )
+                else:
+                    self._verbose("FastAGI ignored non-dtmf barge-in signal", 1)
             return {"result_type": "completed"}
 
         if action_type == "collect_dtmf":
@@ -316,12 +346,28 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                     {"digits": digits, "trace_id": trace_id},
                     call_context,
                 )
+                self._verbose(
+                    f"FastAGI collect_dtmf consumed buffered digits={digits} playback_age_ms={self._last_playback_age_ms()}",
+                    1,
+                )
                 return {"result_type": "dtmf", "value": digits}
             timeout_ms = int(action.get("timeout_seconds") or 5) * 1000
             max_digits = max(1, int(action.get("max_digits") or 1))
             digits = ""
+            playback_age = self._last_playback_age_ms()
+            if playback_age <= DTMF_GRACE_MS:
+                grace_digit = self._normalize_digit(self._wait_for_digit(min(DTMF_GRACE_MS - playback_age + 100, DTMF_GRACE_MS)))
+                if grace_digit:
+                    digits += grace_digit
+                    self._verbose(
+                        f"FastAGI collect_dtmf grace-captured digit={grace_digit} playback_age_ms={self._last_playback_age_ms()}",
+                        1,
+                    )
             for _ in range(max_digits):
+                if len(digits) >= max_digits:
+                    break
                 digit = self._wait_for_digit(timeout_ms)
+                digit = self._normalize_digit(digit)
                 if not digit:
                     break
                 digits += digit
@@ -332,7 +378,30 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                     {"digits": digits, "trace_id": trace_id},
                     call_context,
                 )
+                self._verbose(
+                    f"FastAGI collect_dtmf captured digits={digits} playback_age_ms={self._last_playback_age_ms()}",
+                    1,
+                )
                 return {"result_type": "dtmf", "value": digits}
+            # One-shot retry right after playback boundary to reduce false timeout/invalid transitions.
+            if self._last_playback_age_ms() <= DTMF_GRACE_MS:
+                retry_digit = self._normalize_digit(self._wait_for_digit(DTMF_TIMEOUT_RETRY_MS))
+                if retry_digit:
+                    self._post_runtime_event(
+                        call_session_id,
+                        "dtmf",
+                        {"digits": retry_digit, "trace_id": trace_id},
+                        call_context,
+                    )
+                    self._verbose(
+                        f"FastAGI collect_dtmf retry-captured digit={retry_digit} playback_age_ms={self._last_playback_age_ms()}",
+                        1,
+                    )
+                    return {"result_type": "dtmf", "value": retry_digit}
+                self._verbose(
+                    f"FastAGI collect_dtmf grace-retry timeout playback_age_ms={self._last_playback_age_ms()}",
+                    1,
+                )
             return {"result_type": "timeout"}
 
         if action_type == "wait":
