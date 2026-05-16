@@ -833,6 +833,71 @@ def _build_call_timeline(call_log, call_session):
     }
 
 
+def _reconcile_call_history_payload(payload, call_session, timeline):
+    """
+    Normalize stale call_log view with stronger runtime/session evidence.
+    This prevents impossible states like status=no_answer with DTMF interaction.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    dtmf_events = (timeline or {}).get("dtmf_events") or []
+    has_runtime_dtmf = len(dtmf_events) > 0
+
+    if call_session is not None:
+        session_status = str(call_session.status or "").strip().lower()
+
+        # Backfill missing time/cause fields from call_session when call_log is sparse.
+        if payload.get("answered_at") is None and call_session.answered_at is not None:
+            payload["answered_at"] = call_session.answered_at.isoformat()
+        if payload.get("ended_at") is None and call_session.ended_at is not None:
+            payload["ended_at"] = call_session.ended_at.isoformat()
+        if not payload.get("hangup_cause") and call_session.hangup_cause:
+            payload["hangup_cause"] = str(call_session.hangup_cause)
+        if payload.get("asterisk_uniqueid") in (None, "", "<unknown>", "unknown") and call_session.uniqueid:
+            payload["asterisk_uniqueid"] = str(call_session.uniqueid)
+        if not payload.get("linkedid") and call_session.linkedid:
+            payload["linkedid"] = str(call_session.linkedid)
+
+        # If call was interactive (DTMF) or explicitly answered on session, no_answer is stale.
+        if (
+            str(payload.get("status") or "").strip().lower() == "no_answer"
+            and (call_session.answered_at is not None or has_runtime_dtmf)
+        ):
+            if session_status in {"completed", "hangup", "failed", "busy", "cancelled", "canceled"}:
+                payload["status"] = "completed" if session_status == "hangup" else session_status
+            else:
+                payload["status"] = "answered"
+
+        # Recompute billsec/duration from reconciled timestamps when they are missing/zero.
+        started_raw = payload.get("started_at")
+        answered_raw = payload.get("answered_at")
+        ended_raw = payload.get("ended_at")
+        try:
+            started_dt = datetime.fromisoformat(str(started_raw)) if started_raw else None
+        except (TypeError, ValueError):
+            started_dt = None
+        try:
+            answered_dt = datetime.fromisoformat(str(answered_raw)) if answered_raw else None
+        except (TypeError, ValueError):
+            answered_dt = None
+        try:
+            ended_dt = datetime.fromisoformat(str(ended_raw)) if ended_raw else None
+        except (TypeError, ValueError):
+            ended_dt = None
+
+        if started_dt and ended_dt and (payload.get("duration_sec") is None):
+            payload["duration_sec"] = max(0, int((ended_dt - started_dt).total_seconds()))
+        if answered_dt and ended_dt and (payload.get("billsec") in (None, 0)):
+            payload["billsec"] = max(0, int((ended_dt - answered_dt).total_seconds()))
+
+    # Last guard: if no session evidence but DTMF exists, treat as answered interaction.
+    if str(payload.get("status") or "").strip().lower() == "no_answer" and has_runtime_dtmf:
+        payload["status"] = "answered"
+
+    return payload
+
+
 def _allowed_business_ids_for_actor(actor_user):
     if actor_user.role == "superuser":
         return None
@@ -942,7 +1007,9 @@ def get_call_history_by_id(actor_user, call_id):
 
     payload = _serialize_call_log(row)
     call_session = _resolve_call_session_for_log(row)
-    payload["timeline"] = _build_call_timeline(row, call_session)
+    timeline = _build_call_timeline(row, call_session)
+    payload["timeline"] = timeline
+    payload = _reconcile_call_history_payload(payload, call_session, timeline)
     return payload, None
 
 
