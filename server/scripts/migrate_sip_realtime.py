@@ -148,6 +148,14 @@ def apply_schema():
         conn.execute(
             text(
                 f"""
+                ALTER TABLE {ps_endpoints}
+                ADD COLUMN IF NOT EXISTS dtmf_mode VARCHAR(20)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
                 CREATE TABLE IF NOT EXISTS {ps_reg} (
                   id VARCHAR(40) PRIMARY KEY,
                   transport VARCHAR(40),
