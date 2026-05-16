@@ -1,6 +1,6 @@
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.extensions import db
 from app.models import CallEvent, CallLog, CallSession
@@ -174,6 +174,13 @@ def _to_call_session_status(call_log_status):
     return call_log_status
 
 
+def _to_int(value):
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def process_call_event(payload, business_id=None):
     if not isinstance(payload, dict):
         return None, "Invalid event payload"
@@ -272,12 +279,42 @@ def process_call_event(payload, business_id=None):
         if call_session is not None and call_session.answered_at is None:
             call_session.answered_at = now
     if str(event_name) == "Hangup":
+        # Try to use AMI/CDR-like numeric fields if present to avoid undercounting
+        # when answer events arrive late or correlate on a different leg.
+        payload_billsec = _to_int(
+            _value(
+                payload,
+                "BillableSeconds",
+                "billableseconds",
+                "Billsec",
+                "billsec",
+            )
+        )
+        payload_duration = _to_int(
+            _value(payload, "Duration", "duration", "CallDuration", "callduration")
+        )
+
         if call_log is not None:
             if call_log.ended_at is None:
                 call_log.ended_at = now
+            computed_duration = None
             if call_log.started_at and call_log.ended_at:
-                call_log.duration_sec = int((call_log.ended_at - call_log.started_at).total_seconds())
-            if call_log.answered_at and call_log.ended_at:
+                computed_duration = int((call_log.ended_at - call_log.started_at).total_seconds())
+            if payload_duration is not None and payload_duration >= 0:
+                call_log.duration_sec = payload_duration
+            elif computed_duration is not None:
+                call_log.duration_sec = computed_duration
+
+            if payload_billsec is not None and payload_billsec >= 0:
+                call_log.billsec = payload_billsec
+                # If answer timestamp was missed on correlated leg, infer it.
+                if (
+                    call_log.answered_at is None
+                    and call_log.ended_at is not None
+                    and payload_billsec > 0
+                ):
+                    call_log.answered_at = call_log.ended_at - timedelta(seconds=payload_billsec)
+            elif call_log.answered_at and call_log.ended_at:
                 call_log.billsec = int((call_log.ended_at - call_log.answered_at).total_seconds())
             call_log.hangup_cause = str(_value(payload, "Cause", "cause") or "")
             call_log.hangup_cause_text = str(
@@ -287,6 +324,15 @@ def process_call_event(payload, business_id=None):
         if call_session is not None:
             if call_session.ended_at is None:
                 call_session.ended_at = now
+            if (
+                call_session.answered_at is None
+                and payload_billsec is not None
+                and payload_billsec > 0
+                and call_session.ended_at is not None
+            ):
+                call_session.answered_at = call_session.ended_at - timedelta(
+                    seconds=payload_billsec
+                )
             call_session.hangup_cause = str(_value(payload, "Cause", "cause") or "")
 
     if call_log is not None:

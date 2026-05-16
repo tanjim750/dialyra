@@ -10,7 +10,16 @@ from app.services.asterisk_channels import (
     find_live_channel_by_number,
     find_live_channel_by_uniqueid,
 )
-from app.models import AuditLog, Business, CallLog, CallSession, FlowVersion, SipTrunk
+from app.models import (
+    AuditLog,
+    Business,
+    CallEvent,
+    CallLog,
+    CallSession,
+    FlowRuntimeEvent,
+    FlowVersion,
+    SipTrunk,
+)
 from sqlalchemy import case, func
 
 
@@ -688,6 +697,142 @@ def _serialize_call_log(row):
     }
 
 
+def _safe_json_loads(value, default=None):
+    if default is None:
+        default = {}
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else default
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+
+
+def _resolve_call_session_for_log(call_log):
+    if call_log is None:
+        return None
+    if call_log.action_id:
+        row = (
+            CallSession.query.filter(CallSession.ami_action_id == str(call_log.action_id))
+            .order_by(CallSession.id.desc())
+            .first()
+        )
+        if row:
+            return row
+    if call_log.asterisk_uniqueid:
+        row = (
+            CallSession.query.filter(CallSession.uniqueid == str(call_log.asterisk_uniqueid))
+            .order_by(CallSession.id.desc())
+            .first()
+        )
+        if row:
+            return row
+    if call_log.linkedid:
+        row = (
+            CallSession.query.filter(CallSession.linkedid == str(call_log.linkedid))
+            .order_by(CallSession.id.desc())
+            .first()
+        )
+        if row:
+            return row
+    return None
+
+
+def _build_call_timeline(call_log, call_session):
+    call_session_id = str(call_session.id) if call_session is not None else ""
+    business_id = int(call_log.business_id) if call_log and call_log.business_id is not None else None
+
+    dtmf_events = []
+    actions = []
+
+    if business_id is not None and call_session_id:
+        runtime_rows = (
+            FlowRuntimeEvent.query.filter(
+                FlowRuntimeEvent.business_id == business_id,
+                FlowRuntimeEvent.call_session_id == call_session_id,
+            )
+            .order_by(FlowRuntimeEvent.created_at.asc(), FlowRuntimeEvent.id.asc())
+            .all()
+        )
+        for row in runtime_rows:
+            payload = _safe_json_loads(row.event_data, default={})
+            item = {
+                "source": "runtime",
+                "event_type": row.event_type,
+                "timestamp": row.created_at.isoformat() if row.created_at else None,
+                "node_id": row.node_id,
+                "payload": payload,
+            }
+            actions.append(item)
+            if row.event_type == "dtmf.received":
+                dtmf_events.append(
+                    {
+                        "digits": str(payload.get("digits") or payload.get("value") or ""),
+                        "timestamp": item["timestamp"],
+                        "source": "runtime",
+                        "node_id": row.node_id,
+                        "trace_id": payload.get("trace_id"),
+                    }
+                )
+
+        audit_rows = (
+            AuditLog.query.filter(
+                AuditLog.business_id == business_id,
+                AuditLog.metadata_json.ilike(f"%{call_session_id}%"),
+            )
+            .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+            .limit(500)
+            .all()
+        )
+        for row in audit_rows:
+            metadata = _safe_json_loads(row.metadata_json, default={})
+            if str(
+                metadata.get("call_session_id")
+                or metadata.get("source_call_session_id")
+                or ""
+            ) != call_session_id:
+                continue
+            actions.append(
+                {
+                    "source": "audit",
+                    "event_type": row.action,
+                    "timestamp": row.created_at.isoformat() if row.created_at else None,
+                    "payload": metadata,
+                }
+            )
+
+    call_event_query = CallEvent.query
+    if call_log is not None:
+        if call_session is not None:
+            call_event_query = call_event_query.filter(
+                (CallEvent.call_log_id == call_log.id)
+                | (CallEvent.call_session_id == call_session.id)
+            )
+        else:
+            call_event_query = call_event_query.filter(CallEvent.call_log_id == call_log.id)
+    call_event_rows = (
+        call_event_query.order_by(CallEvent.created_at.asc(), CallEvent.id.asc()).limit(500).all()
+    )
+    for row in call_event_rows:
+        payload = _safe_json_loads(row.event_payload_json, default={})
+        actions.append(
+            {
+                "source": "ami",
+                "event_type": row.event_name,
+                "timestamp": row.created_at.isoformat() if row.created_at else None,
+                "processing_status": row.processing_status,
+                "payload": payload,
+            }
+        )
+
+    actions.sort(key=lambda x: str(x.get("timestamp") or ""))
+    dtmf_events.sort(key=lambda x: str(x.get("timestamp") or ""))
+    return {
+        "call_session_id": int(call_session.id) if call_session is not None else None,
+        "dtmf_events": dtmf_events,
+        "actions": actions,
+    }
+
+
 def _allowed_business_ids_for_actor(actor_user):
     if actor_user.role == "superuser":
         return None
@@ -795,7 +940,10 @@ def get_call_history_by_id(actor_user, call_id):
     if allowed_ids is not None and row.business_id not in allowed_ids:
         return None, "Insufficient permission for this business"
 
-    return _serialize_call_log(row), None
+    payload = _serialize_call_log(row)
+    call_session = _resolve_call_session_for_log(row)
+    payload["timeline"] = _build_call_timeline(row, call_session)
+    return payload, None
 
 
 def get_call_metrics(actor_user, filters):
