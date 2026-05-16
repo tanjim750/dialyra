@@ -23,6 +23,7 @@ def render_trunk_block(trunk, transport_name="transport-udp"):
     registration = f"{prefix}-registration"
 
     lines = [f"; SIP trunk #{trunk.id} ({trunk.name})", ""]
+    dtmf_mode = (getattr(trunk, "dtmf_mode", None) or "rfc4733").strip().lower()
     if trunk.type == "registration":
         lines.extend(
             [
@@ -46,7 +47,7 @@ def render_trunk_block(trunk, transport_name="transport-udp"):
                 f"aors={aor}",
                 f"from_user={trunk.from_user or trunk.username or ''}",
                 f"from_domain={trunk.from_domain or trunk.host}",
-                "dtmf_mode=auto_info",
+                f"dtmf_mode={dtmf_mode}",
                 "direct_media=no",
                 "rtp_symmetric=yes",
                 "force_rport=yes",
@@ -77,7 +78,7 @@ def render_trunk_block(trunk, transport_name="transport-udp"):
                 "allow=ulaw,alaw",
                 f"aors={aor}",
                 f"from_domain={trunk.from_domain or trunk.host}",
-                "dtmf_mode=auto_info",
+                f"dtmf_mode={dtmf_mode}",
                 "direct_media=no",
                 "rtp_symmetric=yes",
                 "force_rport=yes",

@@ -172,6 +172,7 @@ def upsert_trunk(trunk):
             "from_domain": trunk.from_domain or trunk.host,
             "auth": ids["auth"] if needs_auth else "",
             "outbound_auth": ids["auth"] if needs_auth else "",
+            "dtmf_mode": (getattr(trunk, "dtmf_mode", None) or "rfc4733").strip().lower(),
         }
 
         if has_dtmf_mode:
@@ -181,7 +182,7 @@ def upsert_trunk(trunk):
                     INSERT INTO {ps_endpoints}
                     (id, transport, aors, auth, outbound_auth, context, disallow, allow, from_user, from_domain, direct_media, rtp_symmetric, force_rport, rewrite_contact, dtmf_mode)
                     VALUES
-                    (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes', 'auto_info')
+                    (:id, :transport, :aors, :auth, :outbound_auth, :context, 'all', 'ulaw,alaw', :from_user, :from_domain, 'no', 'yes', 'yes', 'yes', :dtmf_mode)
                     ON CONFLICT (id) DO UPDATE SET
                       transport=EXCLUDED.transport,
                       aors=EXCLUDED.aors,

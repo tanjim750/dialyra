@@ -74,6 +74,7 @@ def apply_schema():
                 password_encrypted TEXT,
                 auth_type VARCHAR(20) NOT NULL DEFAULT 'userpass',
                 transport VARCHAR(20) NOT NULL DEFAULT 'udp',
+                dtmf_mode VARCHAR(20) NOT NULL DEFAULT 'rfc4733',
                 from_user VARCHAR(255),
                 from_domain VARCHAR(255),
                 context VARCHAR(255),
@@ -115,6 +116,9 @@ def apply_schema():
     db.session.execute(
         text("ALTER TABLE sip_trunks ADD COLUMN IF NOT EXISTS last_rollback_at TIMESTAMP NULL")
     )
+    db.session.execute(
+        text("ALTER TABLE sip_trunks ADD COLUMN IF NOT EXISTS dtmf_mode VARCHAR(20) NOT NULL DEFAULT 'rfc4733'")
+    )
     db.session.commit()
 
 
@@ -149,6 +153,10 @@ def ensure_indexes_and_constraints():
         (
             "ck_sip_trunks_transport",
             "CHECK (transport IN ('udp','tcp','tls'))",
+        ),
+        (
+            "ck_sip_trunks_dtmf_mode",
+            "CHECK (dtmf_mode IN ('rfc4733','inband','info','auto','auto_info','none'))",
         ),
         (
             "ck_sip_trunks_status",

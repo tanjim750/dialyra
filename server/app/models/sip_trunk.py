@@ -23,6 +23,7 @@ class SipTrunk(db.Model):
     password_encrypted = db.Column(db.Text, nullable=True)
     auth_type = db.Column(db.String(20), nullable=False, default="userpass")
     transport = db.Column(db.String(20), nullable=False, default="udp")
+    dtmf_mode = db.Column(db.String(20), nullable=False, default="rfc4733")
     from_user = db.Column(db.String(255), nullable=True)
     from_domain = db.Column(db.String(255), nullable=True)
     context = db.Column(db.String(255), nullable=True)

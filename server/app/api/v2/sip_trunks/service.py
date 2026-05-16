@@ -25,6 +25,7 @@ from app.services.audit_service import log_audit_event
 TRUNK_TYPES = {"registration", "ip"}
 AUTH_TYPES = {"userpass", "ip", "none"}
 TRANSPORT_TYPES = {"udp", "tcp", "tls"}
+DTMF_MODES = {"rfc4733", "inband", "info", "auto", "auto_info", "none"}
 STATUS_TYPES = {"active", "inactive", "failed", "registering", "rejected", "unreachable"}
 MANAGE_ROLES = {"owner", "admin"}
 VIEW_ROLES = {"owner", "admin", "manager", "agent", "viewer"}
@@ -84,6 +85,7 @@ def serialize_trunk(trunk):
         "username": trunk.username,
         "auth_type": trunk.auth_type,
         "transport": trunk.transport,
+        "dtmf_mode": trunk.dtmf_mode,
         "from_user": trunk.from_user,
         "from_domain": trunk.from_domain,
         "context": trunk.context,
@@ -111,6 +113,7 @@ def _snapshot_trunk(trunk):
         "password_encrypted": trunk.password_encrypted,
         "auth_type": trunk.auth_type,
         "transport": trunk.transport,
+        "dtmf_mode": trunk.dtmf_mode,
         "from_user": trunk.from_user,
         "from_domain": trunk.from_domain,
         "context": trunk.context,
@@ -175,6 +178,7 @@ def _validate_payload(payload, is_update=False):
     trunk_type = (payload.get("type") or "").strip().lower()
     auth_type = (payload.get("auth_type") or "").strip().lower()
     transport = (payload.get("transport") or "").strip().lower()
+    dtmf_mode = (payload.get("dtmf_mode") or "").strip().lower()
     status = (payload.get("status") or "").strip().lower()
 
     if not is_update:
@@ -189,6 +193,8 @@ def _validate_payload(payload, is_update=False):
         return "Invalid auth_type"
     if transport and transport not in TRANSPORT_TYPES:
         return "Invalid transport"
+    if dtmf_mode and dtmf_mode not in DTMF_MODES:
+        return "Invalid dtmf_mode. Allowed values: rfc4733, inband, info, auto, auto_info, none"
     if status and status not in STATUS_TYPES:
         return "Invalid status"
 
@@ -245,6 +251,7 @@ def create_sip_trunk(actor_user, payload):
         password_encrypted=_seal_secret(payload.get("password")),
         auth_type=(payload.get("auth_type") or "userpass").strip().lower(),
         transport=(payload.get("transport") or "udp").strip().lower(),
+        dtmf_mode=(payload.get("dtmf_mode") or "rfc4733").strip().lower(),
         from_user=(payload.get("from_user") or "").strip() or None,
         from_domain=(payload.get("from_domain") or "").strip() or None,
         context=(payload.get("context") or "").strip() or None,
@@ -352,6 +359,8 @@ def update_sip_trunk(actor_user, trunk_id, payload):
         trunk.auth_type = (payload.get("auth_type") or trunk.auth_type).strip().lower()
     if "transport" in payload:
         trunk.transport = (payload.get("transport") or trunk.transport).strip().lower()
+    if "dtmf_mode" in payload:
+        trunk.dtmf_mode = (payload.get("dtmf_mode") or trunk.dtmf_mode).strip().lower()
     if "status" in payload:
         trunk.status = (payload.get("status") or trunk.status).strip().lower()
     if "is_active" in payload:
