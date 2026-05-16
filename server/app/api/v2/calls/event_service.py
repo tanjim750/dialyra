@@ -33,6 +33,67 @@ def _extract_channel_digits(payload):
     return ""
 
 
+def _extract_channel_candidates(payload):
+    keys = (
+        "Channel",
+        "channel",
+        "DestChannel",
+        "destchannel",
+        "BridgePeer",
+        "bridgepeer",
+        "Peer",
+        "peer",
+    )
+    values = []
+    for key in keys:
+        raw = payload.get(key) if isinstance(payload, dict) else None
+        if raw in (None, ""):
+            raw = _value(payload, key)
+        value = str(raw or "").strip()
+        if value:
+            values.append(value)
+    # preserve order but unique
+    seen = set()
+    out = []
+    for value in values:
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
+
+
+def _parse_metadata_json(value):
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _remember_channels(call_session, payload):
+    if call_session is None:
+        return
+    channels = _extract_channel_candidates(payload)
+    if not channels:
+        return
+    meta = _parse_metadata_json(call_session.metadata_json)
+    known = [str(x) for x in (meta.get("known_channels") or []) if str(x or "").strip()]
+    changed = False
+    for ch in channels:
+        if ch not in known:
+            known.append(ch)
+            changed = True
+    if changed:
+        meta["known_channels"] = known[-30:]
+        call_session.metadata_json = json.dumps(meta)
+    # Prefer a non-Local channel as canonical if available.
+    preferred = next((c for c in channels if not c.startswith("Local/")), channels[0])
+    if not str(call_session.channel or "").strip():
+        call_session.channel = preferred
+    elif call_session.channel != preferred and call_session.channel.startswith("Local/") and not preferred.startswith("Local/"):
+        call_session.channel = preferred
+
+
 def _value(payload, *keys):
     for key in keys:
         if key in payload and payload.get(key) not in (None, ""):
@@ -158,6 +219,23 @@ def _find_call_session(payload, business_id=None):
         row = query.filter(CallSession.linkedid == str(linkedid)).order_by(CallSession.id.desc()).first()
         if row:
             return row
+    channel_candidates = _extract_channel_candidates(payload)
+    if channel_candidates:
+        for candidate in channel_candidates:
+            row = (
+                query.filter(CallSession.channel == candidate)
+                .order_by(CallSession.id.desc())
+                .first()
+            )
+            if row:
+                return row
+        # metadata-based channel map fallback
+        recent_rows = query.order_by(CallSession.id.desc()).limit(80).all()
+        for row in recent_rows:
+            meta = _parse_metadata_json(row.metadata_json)
+            known = [str(x) for x in (meta.get("known_channels") or [])]
+            if any(candidate in known for candidate in channel_candidates):
+                return row
     channel_digits = _extract_channel_digits(payload)
     if channel_digits:
         # Conservative fallback: correlate by recent phone number.
@@ -179,6 +257,35 @@ def _to_int(value):
         return int(str(value).strip())
     except (TypeError, ValueError, AttributeError):
         return None
+
+
+def _event_occurred_at(payload):
+    """
+    Best-effort AMI event time parser.
+    Prefers payload timestamp when present, falls back to current UTC.
+    """
+    raw = _value(
+        payload,
+        "Timestamp",
+        "timestamp",
+        "EventTime",
+        "eventtime",
+        "EventTV",
+        "eventtv",
+    )
+    if raw not in (None, ""):
+        text = str(raw).strip()
+        # AMI timestamps are commonly UNIX epoch seconds (sometimes float).
+        try:
+            return datetime.utcfromtimestamp(float(text))
+        except (TypeError, ValueError, OSError):
+            pass
+        # Also accept ISO-like values in case upstream provides those.
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            pass
+    return datetime.utcnow()
 
 
 def process_call_event(payload, business_id=None):
@@ -209,6 +316,31 @@ def process_call_event(payload, business_id=None):
 
     call_log = _find_call_log(payload, business_id=business_id)
     call_session = _find_call_session(payload, business_id=business_id)
+    if call_log is None and call_session is not None and call_session.ami_action_id:
+        call_log = (
+            CallLog.query.filter(CallLog.action_id == str(call_session.ami_action_id))
+            .order_by(CallLog.id.desc())
+            .first()
+        )
+    if call_session is None and call_log is not None:
+        if call_log.action_id:
+            call_session = (
+                CallSession.query.filter(CallSession.ami_action_id == str(call_log.action_id))
+                .order_by(CallSession.id.desc())
+                .first()
+            )
+        if call_session is None and call_log.asterisk_uniqueid:
+            call_session = (
+                CallSession.query.filter(CallSession.uniqueid == str(call_log.asterisk_uniqueid))
+                .order_by(CallSession.id.desc())
+                .first()
+            )
+        if call_session is None and call_log.linkedid:
+            call_session = (
+                CallSession.query.filter(CallSession.linkedid == str(call_log.linkedid))
+                .order_by(CallSession.id.desc())
+                .first()
+            )
     if call_log is None and call_session is None:
         call_event = CallEvent(
             business_id=int(business_id) if business_id is not None else None,
@@ -265,6 +397,7 @@ def process_call_event(payload, business_id=None):
             call_session.uniqueid = str(uniqueid)
         if linkedid and not call_session.linkedid:
             call_session.linkedid = str(linkedid)
+        _remember_channels(call_session, payload)
 
     new_status = _resolve_status(str(event_name), payload)
     if new_status and call_log is not None:
@@ -272,7 +405,7 @@ def process_call_event(payload, business_id=None):
     if new_status and call_session is not None:
         call_session.status = _to_call_session_status(new_status)
 
-    now = datetime.utcnow()
+    now = _event_occurred_at(payload)
     if new_status == "answered":
         if call_log is not None and call_log.answered_at is None:
             call_log.answered_at = now
