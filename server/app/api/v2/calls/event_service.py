@@ -7,6 +7,18 @@ from app.models import CallEvent, CallLog, CallSession
 
 
 INVALID_ID_TOKENS = {"", "unknown", "<unknown>", "none", "null", "n/a"}
+STATUS_RANK = {
+    "queued": 0,
+    "ringing": 1,
+    "answered": 2,
+    "completed": 3,
+    "failed": 3,
+    "no_answer": 3,
+    "busy": 3,
+    "canceled": 3,
+    "cancelled": 3,
+    "hangup": 3,
+}
 
 
 def _digits_only(value):
@@ -131,6 +143,13 @@ def _apply_answered_invariant(call_log, call_session, now):
     if call_session is not None:
         if str(call_session.status or "").strip().lower() in answered_statuses and call_session.answered_at is None:
             call_session.answered_at = now
+
+
+def _should_upgrade_status(current_status, candidate_status):
+    return STATUS_RANK.get(str(candidate_status or "").strip().lower(), 0) >= STATUS_RANK.get(
+        str(current_status or "queued").strip().lower(),
+        0,
+    )
 
 
 def _resolve_status(event_name, payload):
@@ -434,9 +453,12 @@ def process_call_event(payload, business_id=None):
 
     new_status = _resolve_status(str(event_name), payload)
     if new_status and call_log is not None:
-        call_log.status = new_status
+        if _should_upgrade_status(call_log.status, new_status):
+            call_log.status = new_status
     if new_status and call_session is not None:
-        call_session.status = _to_call_session_status(new_status)
+        session_status = _to_call_session_status(new_status)
+        if _should_upgrade_status(call_session.status, session_status):
+            call_session.status = session_status
 
     now = _event_occurred_at(payload)
     if new_status == "answered":
@@ -463,6 +485,10 @@ def process_call_event(payload, business_id=None):
         if call_log is not None:
             if call_log.ended_at is None:
                 call_log.ended_at = now
+            # If channel had already reached answered, don't allow hangup leg mismatch
+            # to regress to no_answer/failed from a different call leg.
+            if call_log.answered_at is not None and str(call_log.status or "").strip().lower() in {"no_answer", "failed"}:
+                call_log.status = "completed"
             computed_duration = None
             if call_log.started_at and call_log.ended_at:
                 computed_duration = int((call_log.ended_at - call_log.started_at).total_seconds())
@@ -493,6 +519,8 @@ def process_call_event(payload, business_id=None):
         if call_session is not None:
             if call_session.ended_at is None:
                 call_session.ended_at = now
+            if call_session.answered_at is not None and str(call_session.status or "").strip().lower() in {"no_answer", "failed"}:
+                call_session.status = "completed"
             if (
                 call_session.answered_at is None
                 and payload_billsec is not None
