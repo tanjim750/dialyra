@@ -219,66 +219,85 @@ def _to_int_or_none(value):
         return None
 
 
+def _parse_userfield_action_id(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    # Expected format written by dialplan:
+    #   call_action_id=<uuid>
+    # Also tolerate multi-part values separated by | or ;.
+    parts = []
+    for token in text.replace(";", "|").split("|"):
+        token = token.strip()
+        if token:
+            parts.append(token)
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, raw = part.split("=", 1)
+        if str(key or "").strip().lower() == "call_action_id":
+            return _normalize_identifier(raw)
+    return None
+
+
 def _fetch_best_cdr_row_for_call(call_log: CallLog):
     if not _table_exists("cdr"):
         return None
     cdr_columns = _columns_for("cdr")
     if not cdr_columns:
         return None
+    if "userfield" not in cdr_columns:
+        return None
 
     time_col = "start" if "start" in cdr_columns else "calldate" if "calldate" in cdr_columns else None
     if time_col is None:
         return None
 
-    select_cols = [c for c in ["uniqueid", "linkedid", "src", "dst", "disposition", "duration", "billsec", "start", "answer", "end", "calldate"] if c in cdr_columns]
+    select_cols = [
+        c
+        for c in [
+            "uniqueid",
+            "linkedid",
+            "src",
+            "dst",
+            "disposition",
+            "duration",
+            "billsec",
+            "start",
+            "answer",
+            "end",
+            "calldate",
+            "userfield",
+        ]
+        if c in cdr_columns
+    ]
     if not select_cols:
         return None
 
-    window_start = (call_log.started_at or datetime.utcnow()) - timedelta(hours=6)
-    window_end = (call_log.started_at or datetime.utcnow()) + timedelta(hours=6)
+    action_id = _normalize_identifier(call_log.action_id)
+    if not action_id:
+        return None
 
-    # 1) strict uniqueid
-    if call_log.asterisk_uniqueid and "uniqueid" in cdr_columns:
-        sql = f"""
-            SELECT {", ".join(select_cols)}
-            FROM cdr
-            WHERE uniqueid = :uniqueid
-            ORDER BY {time_col} DESC
-            LIMIT 1
-        """
-        row = db.session.execute(text(sql), {"uniqueid": str(call_log.asterisk_uniqueid)}).mappings().first()
-        if row:
-            return dict(row)
+    # Strict deterministic match: CALL_ACTION_ID embedded in CDR userfield.
+    sql = f"""
+        SELECT {", ".join(select_cols)}
+        FROM cdr
+        WHERE userfield LIKE :pattern
+        ORDER BY {time_col} DESC
+        LIMIT 50
+    """
+    rows = db.session.execute(
+        text(sql),
+        {"pattern": f"%call_action_id={action_id}%"},
+    ).mappings().all()
+    if not rows:
+        return None
 
-    # 2) linkedid
-    if call_log.linkedid and "linkedid" in cdr_columns:
-        sql = f"""
-            SELECT {", ".join(select_cols)}
-            FROM cdr
-            WHERE linkedid = :linkedid
-            ORDER BY {time_col} DESC
-            LIMIT 1
-        """
-        row = db.session.execute(text(sql), {"linkedid": str(call_log.linkedid)}).mappings().first()
-        if row:
-            return dict(row)
-
-    # 3) fallback dst + time window
-    if call_log.to_number and "dst" in cdr_columns:
-        sql = f"""
-            SELECT {", ".join(select_cols)}
-            FROM cdr
-            WHERE dst = :dst
-              AND {time_col} BETWEEN :window_start AND :window_end
-            ORDER BY {time_col} DESC
-            LIMIT 1
-        """
-        row = db.session.execute(
-            text(sql),
-            {"dst": str(call_log.to_number), "window_start": window_start, "window_end": window_end},
-        ).mappings().first()
-        if row:
-            return dict(row)
+    for row in rows:
+        row_dict = dict(row)
+        parsed_action_id = _parse_userfield_action_id(row_dict.get("userfield"))
+        if parsed_action_id == action_id:
+            return row_dict
 
     return None
 

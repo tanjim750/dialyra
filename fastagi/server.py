@@ -46,6 +46,51 @@ def _api_get(path, extra_headers=None):
 
 
 class FastAGIHandler(socketserver.StreamRequestHandler):
+    def _is_channel_hungup(self):
+        return bool(getattr(self, "_channel_hungup", False))
+
+    def _set_channel_hungup(self, value=True):
+        self._channel_hungup = bool(value)
+
+    def _emit_hangup_signals(self, call_context, trace_id, reason, details=None):
+        if bool(getattr(self, "_hangup_signals_emitted", False)):
+            return
+        self._hangup_signals_emitted = True
+        call_session_id = str((call_context or {}).get("call_session_id") or "")
+        if not call_session_id:
+            return
+
+        payload = {
+            "event_type": "hangup_detected",
+            "reason": str(reason or "runtime_hangup"),
+            "trace_id": str(trace_id or ""),
+            "details": details or {},
+        }
+        try:
+            self._post_runtime_event(call_session_id, "playback-event", payload, call_context)
+        except Exception:
+            pass
+
+        # Also emit a synthetic AMI-style hangup event so call-event pipeline
+        # can finalize even if listener misses a leg.
+        try:
+            _api_post(
+                "/api/v2/internal/call-events",
+                {
+                    "Event": "Hangup",
+                    "ActionID": str((call_context or {}).get("call_action_id") or ""),
+                    "Uniqueid": str((call_context or {}).get("agi_uniqueid") or ""),
+                    "Linkedid": str((call_context or {}).get("agi_uniqueid") or ""),
+                    "Cause": "16",
+                    "Cause-txt": str(reason or "Normal Clearing"),
+                    "Channel": str((call_context or {}).get("agi_channel") or ""),
+                    "Timestamp": str(time.time()),
+                },
+                extra_headers=self._internal_headers(call_context),
+            )
+        except Exception:
+            pass
+
     def _get_pending_dtmf(self):
         return str(getattr(self, "_pending_dtmf", "") or "")
 
@@ -95,7 +140,10 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         safe = str(message).replace('"', "'")
         return self._send_agi(f'VERBOSE "{safe}" {int(level)}')
 
-    def _hangup(self):
+    def _hangup(self, call_context=None, trace_id="", reason="runtime_hangup"):
+        self._set_channel_hungup(True)
+        if call_context is not None:
+            self._emit_hangup_signals(call_context, trace_id, reason)
         return self._send_agi("HANGUP")
 
     def _get_variable(self, key):
@@ -130,6 +178,8 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         code = self._parse_agi_result_code(raw)
         # STREAM FILE returns ASCII code of pressed digit when interrupted.
         if code is None or code <= 0:
+            if code == -1:
+                self._set_channel_hungup(True)
             return ""
         try:
             return chr(code)
@@ -166,6 +216,8 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return ""
         # -1: hangup/error, 0: timeout
         if code <= 0:
+            if code == -1:
+                self._set_channel_hungup(True)
             return ""
         try:
             return chr(code)
@@ -289,7 +341,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             return {"result_type": "completed"}
         if action_type == "hangup":
             self._verbose("FastAGI action=hangup", 1)
-            self._hangup()
+            self._hangup(call_context, trace_id, reason="runtime_hangup_action")
             return {"terminal": True, "result_type": "completed"}
 
         if action_type == "play_audio_asset":
@@ -371,6 +423,15 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                 if not digit:
                     break
                 digits += digit
+            if self._is_channel_hungup():
+                self._verbose("FastAGI collect_dtmf detected channel hangup", 1)
+                self._emit_hangup_signals(
+                    call_context,
+                    trace_id,
+                    "channel_hangup_during_collect_dtmf",
+                    {"timeout_ms": timeout_ms, "max_digits": max_digits},
+                )
+                return {"terminal": True, "result_type": "hangup"}
             if digits:
                 self._post_runtime_event(
                     call_session_id,
@@ -407,7 +468,16 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         if action_type == "wait":
             self._verbose("FastAGI action=wait", 1)
             duration = max(1, int(action.get("duration_seconds") or 1))
-            self._send_agi(f"WAIT FOR DIGIT {duration * 1000}")
+            self._wait_for_digit(duration * 1000)
+            if self._is_channel_hungup():
+                self._verbose("FastAGI wait detected channel hangup", 1)
+                self._emit_hangup_signals(
+                    call_context,
+                    trace_id,
+                    "channel_hangup_during_wait",
+                    {"duration_seconds": duration},
+                )
+                return {"terminal": True, "result_type": "hangup"}
             self._post_runtime_event(
                 call_session_id,
                 "wait-event",
@@ -455,7 +525,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             {"reason": "unsupported_runtime_action", "runtime_action_type": action_type, "trace_id": trace_id},
             call_context,
         )
-        self._hangup()
+        self._hangup(call_context, trace_id, reason="unsupported_runtime_action")
         return {"terminal": True, "result_type": "error"}
 
     def handle(self):
@@ -499,7 +569,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                     {"status": exc.code, "body": body[:300]},
                     context,
                 )
-                self._hangup()
+                self._hangup(context, trace_id, reason="resolve_next_http_error")
                 return
             except Exception as exc:
                 self._verbose(f"FastAGI resolve-next error: {exc}", 1)
@@ -510,7 +580,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                     {"error": str(exc)},
                     context,
                 )
-                self._hangup()
+                self._hangup(context, trace_id, reason="resolve_next_error")
                 return
 
             action = (resolved or {}).get("runtime_action") or {}
@@ -522,7 +592,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
             result_value = handled.get("value")
             steps += 1
 
-        self._hangup()
+        self._hangup(context, trace_id, reason="max_runtime_steps_exceeded")
 
 
 if __name__ == "__main__":

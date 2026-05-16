@@ -78,8 +78,13 @@ class AMIService:
         )
 
         variable_lines = ""
-        if channel_variables:
-            for key, value in channel_variables.items():
+        effective_vars = dict(channel_variables or {})
+        # Ensure deterministic correlation key is always present on channel.
+        if not effective_vars.get("CALL_ACTION_ID"):
+            effective_vars["CALL_ACTION_ID"] = action_id
+
+        if effective_vars:
+            for key, value in effective_vars.items():
                 if value is None:
                     continue
                 # Use inherited channel vars so values survive Local -> PJSIP leg.
