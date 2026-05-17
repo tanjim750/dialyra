@@ -130,7 +130,7 @@ def _validate_edge_rule_inputs(condition_type, condition_value):
     return None, None
 
 
-def _validate_node_config(node_type, cfg, *, node_id=None):
+def _validate_node_config(node_type, cfg, *, node_id=None, business_id=None):
     errors = []
     t = str(node_type or "").strip().lower()
     config = cfg if isinstance(cfg, dict) else {}
@@ -158,6 +158,20 @@ def _validate_node_config(node_type, cfg, *, node_id=None):
                 node_id=node_id,
             )
             return None
+        if business_id is not None:
+            asset = AudioAsset.query.filter_by(
+                id=normalized,
+                business_id=int(business_id),
+                is_deleted=False,
+            ).first()
+            if asset is None or str(asset.status or "").strip().lower() == "deleted":
+                _append_node_error(
+                    errors,
+                    "INVALID_AUDIO_ASSET_ID",
+                    "config.audio_asset_id not found for this business or deleted",
+                    node_id=node_id,
+                )
+                return None
         return normalized
 
     if t == "play_audio":
@@ -495,7 +509,7 @@ def create_and_publish_flow(actor_user, payload):
             return None, f"Duplicate node_key in nodes payload: {node_key}"
         seen_node_keys.add(node_key)
         cfg = item.get("config") if isinstance(item.get("config"), dict) else {}
-        config_errors = _validate_node_config(node_type, cfg)
+        config_errors = _validate_node_config(node_type, cfg, business_id=business.id)
         if config_errors:
             first = config_errors[0]
             return None, f"nodes[{idx}] {first['code']}: {first['message']}"
@@ -801,7 +815,7 @@ def validate_flow(actor_user, flow_id):
                     }
                 )
                 continue
-        issues.extend(_validate_node_config(node.node_type, cfg, node_id=node.id))
+        issues.extend(_validate_node_config(node.node_type, cfg, node_id=node.id, business_id=flow.business_id))
 
     # edge integrity checks
     seen_signatures = set()
@@ -1110,7 +1124,7 @@ def create_flow_node(actor_user, flow_id, payload):
         return None, "node_key already exists in this flow"
 
     config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
-    config_errors = _validate_node_config(node_type, config)
+    config_errors = _validate_node_config(node_type, config, business_id=flow.business_id)
     if config_errors:
         first = config_errors[0]
         return None, f"{first['code']}: {first['message']}"
@@ -1191,7 +1205,9 @@ def update_flow_node(actor_user, node_id, payload):
                     existing_config = parsed
             except json.JSONDecodeError:
                 return None, "INVALID_NODE_CONFIG_JSON: existing node config_json is invalid JSON"
-        config_errors = _validate_node_config(node_type, existing_config, node_id=node.id)
+        config_errors = _validate_node_config(
+            node_type, existing_config, node_id=node.id, business_id=flow.business_id
+        )
         if config_errors:
             first = config_errors[0]
             return None, f"{first['code']}: {first['message']}"
@@ -1206,7 +1222,9 @@ def update_flow_node(actor_user, node_id, payload):
             return None, "config must be an object"
         effective_node_type = node.node_type
         next_config = payload.get("config")
-        config_errors = _validate_node_config(effective_node_type, next_config, node_id=node.id)
+        config_errors = _validate_node_config(
+            effective_node_type, next_config, node_id=node.id, business_id=flow.business_id
+        )
         if config_errors:
             first = config_errors[0]
             return None, f"{first['code']}: {first['message']}"
