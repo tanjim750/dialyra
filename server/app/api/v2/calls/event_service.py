@@ -482,9 +482,10 @@ def process_call_event(payload, business_id=None):
             action_id=action_id,
             uniqueid=uniqueid,
             linkedid=linkedid,
-            processing_status="ignored_unmatched",
+            # Keep DB status within allowed enum; use last_error for unmatched detail.
+            processing_status="failed",
             process_attempts=1,
-            last_error="Call correlation missed (strict id match required)",
+            last_error="CALL_CORRELATION_MISSED: strict id match required",
             processed_at=None,
         )
         db.session.add(call_event)

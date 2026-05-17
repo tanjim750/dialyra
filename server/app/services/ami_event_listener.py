@@ -64,17 +64,22 @@ def _process_event(payload):
                 "channel": payload.get("Channel"),
             },
         )
-    result, error = process_call_event(payload, business_id=None)
-    if error:
-        LOGGER.debug("AMI event not applied (%s): %s", event_name, error)
+    try:
+        result, error = process_call_event(payload, business_id=None)
+        if error:
+            LOGGER.debug("AMI event not applied (%s): %s", event_name, error)
+            db.session.rollback()
+        else:
+            LOGGER.debug(
+                "AMI event applied: event=%s call_log_id=%s status=%s",
+                event_name,
+                result.get("call_log_id"),
+                result.get("status"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Never let one malformed/failed event kill the listener loop.
+        LOGGER.warning("AMI event processing failed (%s): %s", event_name, exc)
         db.session.rollback()
-    else:
-        LOGGER.debug(
-            "AMI event applied: event=%s call_log_id=%s status=%s",
-            event_name,
-            result.get("call_log_id"),
-            result.get("status"),
-        )
 
 
 def _listener_loop(app):
