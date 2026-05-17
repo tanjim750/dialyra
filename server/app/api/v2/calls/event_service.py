@@ -1,11 +1,15 @@
 import json
 import hashlib
 import time
+import logging
 from datetime import datetime, timedelta
 
+from flask import current_app
 from app.extensions import db
 from app.models import CallEvent, CallLog, CallSession
 from app.services.call_reconciliation import apply_cdr_truth_for_call
+
+LOGGER = logging.getLogger(__name__)
 
 
 INVALID_ID_TOKENS = {"", "unknown", "<unknown>", "none", "null", "n/a"}
@@ -21,6 +25,22 @@ STATUS_RANK = {
     "cancelled": 3,
     "hangup": 3,
 }
+
+
+def _pipeline_verbose_enabled():
+    try:
+        return bool(current_app.config.get("CALL_PIPELINE_VERBOSE", False))
+    except Exception:
+        return False
+
+
+def _vlog(message, **meta):
+    if not _pipeline_verbose_enabled():
+        return
+    if meta:
+        LOGGER.info("CALL-PIPELINE: %s | %s", message, meta)
+    else:
+        LOGGER.info("CALL-PIPELINE: %s", message)
 
 
 def _digits_only(value):
@@ -427,6 +447,13 @@ def process_call_event(payload, business_id=None):
                 .first()
             )
     if call_log is None and call_session is None:
+        _vlog(
+            "AMI event correlation failed",
+            event=event_name,
+            action_id=action_id,
+            uniqueid=uniqueid,
+            linkedid=linkedid,
+        )
         call_event = CallEvent(
             business_id=int(business_id) if business_id is not None else None,
             call_log_id=None,
@@ -567,7 +594,17 @@ def process_call_event(payload, business_id=None):
 
         # Finalize with CDR truth at hangup-time; retry to absorb CDR write lag.
         if call_log is not None:
-            _finalize_from_cdr_with_retry(call_log, call_session)
+            finalized = _finalize_from_cdr_with_retry(call_log, call_session)
+            _vlog(
+                "CDR finalize on hangup",
+                finalized=finalized,
+                call_log_id=call_log.id,
+                action_id=call_log.action_id,
+                status=call_log.status,
+                answered_at=(call_log.answered_at.isoformat() if call_log.answered_at else None),
+                ended_at=(call_log.ended_at.isoformat() if call_log.ended_at else None),
+                billsec=call_log.billsec,
+            )
 
     _apply_answered_invariant(call_log, call_session, now)
 
@@ -580,6 +617,19 @@ def process_call_event(payload, business_id=None):
     call_event.last_error = None
     call_event.processed_at = datetime.utcnow()
     db.session.commit()
+    _vlog(
+        "AMI event processed",
+        event=event_name,
+        call_log_id=(call_log.id if call_log is not None else None),
+        call_session_id=(call_session.id if call_session is not None else None),
+        status=(
+            call_log.status
+            if call_log is not None
+            else call_session.status
+            if call_session is not None
+            else None
+        ),
+    )
 
     return {
         "event_id": call_event.id,

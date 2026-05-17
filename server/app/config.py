@@ -61,6 +61,7 @@ class Config:
     AMI_EVENT_RECONNECT_DELAY_SEC = float(
         os.getenv("AMI_EVENT_RECONNECT_DELAY_SEC", "2")
     )
+    CALL_PIPELINE_VERBOSE = os.getenv("CALL_PIPELINE_VERBOSE", "false").lower() == "true"
     # 0 means unlimited system-wide concurrent outbound calls.
     SYSTEM_MAX_CONCURRENT_CALLS = int(os.getenv("SYSTEM_MAX_CONCURRENT_CALLS", "0"))
     CALL_RETRY_MAX_ATTEMPTS = int(os.getenv("CALL_RETRY_MAX_ATTEMPTS", "3"))

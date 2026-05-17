@@ -12,6 +12,7 @@ TARGET_EVENTS = {"OriginateResponse", "DialBegin", "DialEnd", "BridgeEnter", "Ha
 
 _listener_thread = None
 _listener_lock = threading.Lock()
+_pipeline_verbose = False
 
 
 def _build_login_payload(username, secret):
@@ -52,6 +53,17 @@ def _process_event(payload):
     event_name = payload.get("Event")
     if event_name not in TARGET_EVENTS:
         return
+    if _pipeline_verbose:
+        LOGGER.info(
+            "CALL-PIPELINE: AMI listener received | %s",
+            {
+                "event": event_name,
+                "action_id": payload.get("ActionID"),
+                "uniqueid": payload.get("Uniqueid") or payload.get("DestUniqueid"),
+                "linkedid": payload.get("Linkedid"),
+                "channel": payload.get("Channel"),
+            },
+        )
     result, error = process_call_event(payload, business_id=None)
     if error:
         LOGGER.debug("AMI event not applied (%s): %s", event_name, error)
@@ -72,6 +84,8 @@ def _listener_loop(app):
     secret = app.config.get("AMI_SECRET")
     timeout = float(app.config.get("AMI_TIMEOUT", 5))
     reconnect_delay = float(app.config.get("AMI_EVENT_RECONNECT_DELAY_SEC", 2))
+    global _pipeline_verbose
+    _pipeline_verbose = bool(app.config.get("CALL_PIPELINE_VERBOSE", False))
 
     with app.app_context():
         while True:

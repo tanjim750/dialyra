@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
+import logging
 
+from flask import current_app
 from sqlalchemy import text
 
 from app.extensions import db
@@ -24,6 +26,24 @@ STATUS_RANK = {
     "cancelled": 3,
     "hangup": 3,
 }
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _pipeline_verbose_enabled():
+    try:
+        return bool(current_app.config.get("CALL_PIPELINE_VERBOSE", False))
+    except Exception:
+        return False
+
+
+def _vlog(message, **meta):
+    if not _pipeline_verbose_enabled():
+        return
+    if meta:
+        LOGGER.info("CALL-PIPELINE: %s | %s", message, meta)
+    else:
+        LOGGER.info("CALL-PIPELINE: %s", message)
 
 
 @dataclass
@@ -291,6 +311,7 @@ def _fetch_best_cdr_row_for_call(call_log: CallLog):
 
     action_id = _normalize_identifier(call_log.action_id)
     if not action_id:
+        _vlog("CDR lookup skipped: missing action_id", call_log_id=call_log.id)
         return None
 
     # Strict deterministic match: CALL_ACTION_ID embedded in CDR userfield.
@@ -306,14 +327,17 @@ def _fetch_best_cdr_row_for_call(call_log: CallLog):
         {"pattern": f"%call_action_id={action_id}%"},
     ).mappings().all()
     if not rows:
+        _vlog("CDR lookup: no rows by action_id", call_log_id=call_log.id, action_id=action_id)
         return None
 
     for row in rows:
         row_dict = dict(row)
         parsed_action_id = _parse_userfield_action_id(row_dict.get("userfield"))
         if parsed_action_id == action_id:
+            _vlog("CDR lookup: matched row by action_id", call_log_id=call_log.id, action_id=action_id)
             return row_dict
 
+    _vlog("CDR lookup: rows found but no exact parsed action_id match", call_log_id=call_log.id, action_id=action_id)
     return None
 
 
@@ -324,6 +348,7 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
     """
     cdr_row = _fetch_best_cdr_row_for_call(call_log)
     if not cdr_row:
+        _vlog("CDR finalize skipped: no matched row", call_log_id=call_log.id, action_id=call_log.action_id)
         return False
 
     if call_session is None:
@@ -410,6 +435,17 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
             call_log.billsec = max(1, duration_val - offset)
 
     _apply_answered_invariant(call_log, call_session)
+    _vlog(
+        "CDR finalize applied",
+        call_log_id=call_log.id,
+        action_id=call_log.action_id,
+        status=call_log.status,
+        started_at=(call_log.started_at.isoformat() if call_log.started_at else None),
+        answered_at=(call_log.answered_at.isoformat() if call_log.answered_at else None),
+        ended_at=(call_log.ended_at.isoformat() if call_log.ended_at else None),
+        duration_sec=call_log.duration_sec,
+        billsec=call_log.billsec,
+    )
     return True
 
 

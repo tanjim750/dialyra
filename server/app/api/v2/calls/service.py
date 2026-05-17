@@ -1009,7 +1009,10 @@ def get_call_history_by_id(actor_user, call_id):
     call_session = _resolve_call_session_for_log(row)
     # Safety net: if AMI correlation missed final leg, finalize from CDR on read.
     should_try_cdr_finalize = (
-        row.ended_at is None
+        # Always allow CDR refresh when we have action_id correlation key.
+        # This keeps history aligned if CDR row is written after initial hangup processing.
+        bool(str(row.action_id or "").strip())
+        or row.ended_at is None
         or row.answered_at is None
         or row.asterisk_uniqueid in (None, "", "unknown", "<unknown>")
         or row.billsec is None
