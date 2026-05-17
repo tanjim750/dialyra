@@ -18,8 +18,13 @@ RUN set -eux; \
       apt-get update; \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends unixodbc odbc-postgresql; \
       rm -rf /var/lib/apt/lists/*; \
+      command -v odbcinst; \
+      command -v isql; \
+      dpkg -L odbc-postgresql | grep -E 'psqlodbc.*\.so|libodbcpsqlS\.so' >/dev/null; \
     elif command -v apk >/dev/null 2>&1; then \
       apk add --no-cache unixodbc psqlodbc; \
+      command -v odbcinst; \
+      command -v isql; \
     else \
       echo "Unsupported base image package manager; install unixODBC + PostgreSQL ODBC driver manually."; \
       exit 1; \
