@@ -1010,17 +1010,87 @@ def list_call_history(actor_user, filters):
     }, None
 
 
-def get_call_history_by_id(actor_user, call_id):
-    try:
-        normalized_id = int(call_id)
-    except (TypeError, ValueError):
-        return None, "Invalid call id"
+def get_call_history_by_id(actor_user, call_id, *, action_id=None, call_session_id=None):
+    allowed_ids = _allowed_business_ids_for_actor(actor_user)
 
-    row = CallLog.query.get(normalized_id)
+    row = None
+    resolved_by = None
+
+    # 1) action_id query param has highest precedence
+    if action_id is not None and str(action_id).strip():
+        normalized_action_id = str(action_id).strip()
+        query = CallLog.query.filter(CallLog.action_id == normalized_action_id)
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return None, "Call history not found"
+            query = query.filter(CallLog.business_id.in_(allowed_ids))
+        row = query.order_by(CallLog.id.desc()).first()
+        resolved_by = "action_id"
+
+    # 2) call_session_id query param
+    if row is None and call_session_id is not None and str(call_session_id).strip():
+        try:
+            normalized_session_id = int(str(call_session_id).strip())
+        except (TypeError, ValueError):
+            return None, "Invalid call_session_id"
+
+        session_query = CallSession.query.filter(CallSession.id == normalized_session_id)
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return None, "Call history not found"
+            session_query = session_query.filter(CallSession.business_id.in_(allowed_ids))
+        session_row = session_query.first()
+        if session_row is not None:
+            if session_row.ami_action_id:
+                row = (
+                    CallLog.query.filter(
+                        CallLog.business_id == session_row.business_id,
+                        CallLog.action_id == str(session_row.ami_action_id),
+                    )
+                    .order_by(CallLog.id.desc())
+                    .first()
+                )
+            if row is None and session_row.uniqueid:
+                row = (
+                    CallLog.query.filter(
+                        CallLog.business_id == session_row.business_id,
+                        CallLog.asterisk_uniqueid == str(session_row.uniqueid),
+                    )
+                    .order_by(CallLog.id.desc())
+                    .first()
+                )
+            if row is None and session_row.linkedid:
+                row = (
+                    CallLog.query.filter(
+                        CallLog.business_id == session_row.business_id,
+                        CallLog.linkedid == str(session_row.linkedid),
+                    )
+                    .order_by(CallLog.id.desc())
+                    .first()
+                )
+            if row is None:
+                row = (
+                    CallLog.query.filter(
+                        CallLog.business_id == session_row.business_id,
+                        CallLog.to_number == str(session_row.phone_number or ""),
+                    )
+                    .order_by(CallLog.id.desc())
+                    .first()
+                )
+            resolved_by = "call_session_id"
+
+    # 3) fallback path param call_id (existing behavior)
+    if row is None:
+        try:
+            normalized_id = int(call_id)
+        except (TypeError, ValueError):
+            return None, "Invalid call id"
+        row = CallLog.query.get(normalized_id)
+        resolved_by = "call_log_id"
+
     if row is None:
         return None, "Call history not found"
 
-    allowed_ids = _allowed_business_ids_for_actor(actor_user)
     if allowed_ids is not None and row.business_id not in allowed_ids:
         return None, "Insufficient permission for this business"
 
@@ -1045,6 +1115,14 @@ def get_call_history_by_id(actor_user, call_id):
     timeline = _build_call_timeline(row, call_session)
     payload["timeline"] = timeline
     payload = _reconcile_call_history_payload(payload, call_session, timeline)
+    payload["resolved_by"] = resolved_by
+    payload["resolved_input"] = (
+        str(action_id).strip()
+        if resolved_by == "action_id"
+        else str(call_session_id).strip()
+        if resolved_by == "call_session_id"
+        else str(call_id)
+    )
     return payload, None
 
 

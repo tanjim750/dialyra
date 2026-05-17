@@ -15,6 +15,33 @@ _worker_lock = threading.Lock()
 _wake_queue = queue.Queue(maxsize=1)
 
 
+def _parse_status_code_list(raw):
+    out = set()
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _is_non_retryable_http_status(app, status_code):
+    try:
+        code = int(status_code)
+    except (TypeError, ValueError):
+        return False
+    no_retry = _parse_status_code_list(
+        app.config.get(
+            "POSTCALL_WEBHOOK_NO_RETRY_STATUS_CODES",
+            "400,401,403,404,405,409,410,411,413,414,415,422",
+        )
+    )
+    return code in no_retry
+
+
 def _retry_schedule_seconds(app):
     raw = str(app.config.get("POSTCALL_WEBHOOK_RETRY_SCHEDULE_SEC", "10,30,120") or "").strip()
     out = []
@@ -119,7 +146,8 @@ def _complete_job_failure(app, job, status_code=None, body=None, error=None):
     job.last_response_body = (body or "")[:2000] if body is not None else None
     job.last_error = str(error or f"http_status_{status_code}")[:1000]
     job.last_attempt_at = datetime.utcnow()
-    if next_attempt >= max(1, max_attempts):
+    non_retryable = status_code is not None and _is_non_retryable_http_status(app, status_code)
+    if non_retryable or next_attempt >= max(1, max_attempts):
         job.status = "failed"
         job.next_retry_at = None
     else:
@@ -217,5 +245,13 @@ def get_post_call_webhook_worker_health(app):
         "max_attempts": int(app.config.get("POSTCALL_WEBHOOK_MAX_ATTEMPTS", 4) or 4),
         "retry_schedule_sec": str(
             app.config.get("POSTCALL_WEBHOOK_RETRY_SCHEDULE_SEC", "10,30,120") or "10,30,120"
+        ),
+        "no_retry_status_codes": sorted(
+            _parse_status_code_list(
+                app.config.get(
+                    "POSTCALL_WEBHOOK_NO_RETRY_STATUS_CODES",
+                    "400,401,403,404,405,409,410,411,413,414,415,422",
+                )
+            )
         ),
     }

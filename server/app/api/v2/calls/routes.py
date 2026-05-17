@@ -553,6 +553,32 @@ def runtime_post_call_webhook_jobs_summary_endpoint():
 @jwt_context_required
 @require_stuff_or_superuser
 def list_call_history_endpoint():
+    selector_action_id = request.args.get("action_id")
+    selector_call_session_id = request.args.get("call_session_id")
+    selector_call_id = request.args.get("call_id")
+    if (
+        (selector_action_id is not None and str(selector_action_id).strip())
+        or (selector_call_session_id is not None and str(selector_call_session_id).strip())
+        or (selector_call_id is not None and str(selector_call_id).strip())
+    ):
+        synthetic_call_id = selector_call_id if str(selector_call_id or "").strip() else "0"
+        result, error = get_call_history_by_id(
+            g.actor_user,
+            synthetic_call_id,
+            action_id=selector_action_id,
+            call_session_id=selector_call_session_id,
+        )
+        if error:
+            status = (
+                404
+                if error == "Call history not found"
+                else 403
+                if "permission" in error.lower()
+                else 400
+            )
+            return jsonify({"error": error}), status
+        return jsonify(result), 200
+
     filters = {
         "business_id": request.args.get("business_id"),
         "sip_trunk_id": request.args.get("sip_trunk_id"),
@@ -574,7 +600,12 @@ def list_call_history_endpoint():
 @jwt_context_required
 @require_stuff_or_superuser
 def get_call_history_endpoint(call_id):
-    result, error = get_call_history_by_id(g.actor_user, call_id)
+    result, error = get_call_history_by_id(
+        g.actor_user,
+        call_id,
+        action_id=request.args.get("action_id"),
+        call_session_id=request.args.get("call_session_id"),
+    )
     if error:
         status = (
             404

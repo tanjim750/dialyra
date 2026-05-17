@@ -77,6 +77,10 @@ class Config:
     POSTCALL_WEBHOOK_RETRY_SCHEDULE_SEC = os.getenv(
         "POSTCALL_WEBHOOK_RETRY_SCHEDULE_SEC", "10,30,120"
     )
+    POSTCALL_WEBHOOK_NO_RETRY_STATUS_CODES = os.getenv(
+        "POSTCALL_WEBHOOK_NO_RETRY_STATUS_CODES",
+        "400,401,403,404,405,409,410,411,413,414,415,422",
+    )
     CALL_PIPELINE_VERBOSE = os.getenv("CALL_PIPELINE_VERBOSE", "false").lower() == "true"
     # 0 means unlimited system-wide concurrent outbound calls.
     SYSTEM_MAX_CONCURRENT_CALLS = int(os.getenv("SYSTEM_MAX_CONCURRENT_CALLS", "0"))
