@@ -304,6 +304,7 @@ def originate_call_for_business(
     flow_id=None,
     campaign_id=None,
     campaign_flow_id=None,
+    webhook_variables=None,
 ):
     business = Business.query.get(int(business_id))
     if business is None:
@@ -444,7 +445,11 @@ def originate_call_for_business(
         uniqueid=None,
         linkedid=None,
         ami_action_id=action_id,
-        variables_json=None,
+        variables_json=(
+            json.dumps({"webhook_variables": webhook_variables})
+            if isinstance(webhook_variables, dict) and webhook_variables
+            else None
+        ),
         metadata_json=(json.dumps(session_metadata) if isinstance(session_metadata, dict) else None),
         started_at=started_at,
         answered_at=None,

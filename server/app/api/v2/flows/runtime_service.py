@@ -6,7 +6,7 @@ from time import perf_counter
 from flask import current_app
 from app.api.v2.flows.node_executors import execute_node
 from app.extensions import db
-from app.models import FlowRuntimeEvent, FlowRuntimeSession, FlowVersion
+from app.models import CallLog, CallSession, FlowRuntimeEvent, FlowRuntimeSession, FlowVersion
 
 
 def _json_load(value, default):
@@ -115,6 +115,58 @@ def _ensure_session(business_id, payload):
     )
     db.session.commit()
     return session, True, None
+
+
+def _hydrate_runtime_variables(actor_business, session, merged_vars, *, result_type=None, value=None):
+    out = dict(merged_vars or {})
+    out.setdefault("call_session_id", str(session.call_session_id))
+    out.setdefault("business_id", str(actor_business.id))
+    out.setdefault("flow_id", str(session.flow_id) if session.flow_id is not None else None)
+    out.setdefault(
+        "flow_version_id", str(session.flow_version_id) if session.flow_version_id is not None else None
+    )
+
+    call_session_row = None
+    try:
+        call_session_row = CallSession.query.get(int(session.call_session_id))
+    except (TypeError, ValueError):
+        call_session_row = None
+
+    if call_session_row is not None:
+        out.setdefault("sip_trunk_id", str(call_session_row.sip_trunk_id or ""))
+        out.setdefault("dialed_number", str(call_session_row.phone_number or ""))
+        out.setdefault("call_started_at", call_session_row.started_at.isoformat() if call_session_row.started_at else None)
+        out.setdefault(
+            "call_answered_at", call_session_row.answered_at.isoformat() if call_session_row.answered_at else None
+        )
+        out.setdefault("call_ended_at", call_session_row.ended_at.isoformat() if call_session_row.ended_at else None)
+        out.setdefault("hangup_cause", str(call_session_row.hangup_cause or ""))
+        out.setdefault("call_action_id", str(call_session_row.ami_action_id or ""))
+
+        call_session_vars = _json_load(call_session_row.variables_json, {})
+        template_vars = None
+        if isinstance(call_session_vars, dict):
+            # primary key for new payload contract
+            template_vars = call_session_vars.get("webhook_variables")
+            # backward compatibility for older sessions
+            if template_vars is None:
+                template_vars = call_session_vars.get("template_variables")
+        if isinstance(template_vars, dict):
+            for key, val in template_vars.items():
+                out.setdefault(str(key), val)
+
+        if call_session_row.ami_action_id:
+            log_row = (
+                CallLog.query.filter(CallLog.action_id == str(call_session_row.ami_action_id))
+                .order_by(CallLog.id.desc())
+                .first()
+            )
+            if log_row is not None:
+                out.setdefault("call_log_uuid", str(log_row.uuid or ""))
+
+    if str(result_type or "").strip().lower() == "dtmf" and value is not None:
+        out["dtmf_value"] = str(value)
+    return out
 
 
 def _edge_matches(edge, result_type, value, variables):
@@ -340,6 +392,13 @@ def resolve_next_runtime(actor_business, payload):
     incoming_vars = payload.get("variables") if isinstance(payload.get("variables"), dict) else {}
     merged_vars = dict(existing_vars)
     merged_vars.update(incoming_vars)
+    merged_vars = _hydrate_runtime_variables(
+        actor_business,
+        session,
+        merged_vars,
+        result_type=payload.get("result_type"),
+        value=payload.get("value"),
+    )
 
     current_node_id = payload.get("current_node_id", session.current_node_id)
     try:

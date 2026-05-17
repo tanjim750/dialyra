@@ -103,6 +103,7 @@ def originate_call_runtime():
     flow_id = payload.get("flow_id")
     campaign_id = payload.get("campaign_id")
     campaign_flow_id = payload.get("campaign_flow_id")
+    webhook_variables = payload.get("webhook_variables")
     try:
         result, error = originate_call_for_business(
             phone=phone,
@@ -113,6 +114,7 @@ def originate_call_runtime():
             flow_id=flow_id,
             campaign_id=campaign_id,
             campaign_flow_id=campaign_flow_id,
+            webhook_variables=webhook_variables,
         )
         if error:
             _audit(
