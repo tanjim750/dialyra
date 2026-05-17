@@ -58,6 +58,7 @@ services:
       - ../asterisk/res_odbc.conf:/etc/asterisk/res_odbc.conf
       - ../asterisk/cdr_adaptive_odbc.conf:/etc/asterisk/cdr_adaptive_odbc.conf
       - ../asterisk/odbc.ini:/etc/odbc.ini
+      - ../asterisk/odbcinst.ini:/etc/odbcinst.ini
       - ${DIALYRA_STORAGE_HOST_PATH:-../storage}:/storage
       - ../asterisk/var/lib/asterisk/sounds:/var/lib/asterisk/sounds
       - ${DIALYRA_STORAGE_HOST_PATH:-../storage}/audio-assets:/data/audio-assets
