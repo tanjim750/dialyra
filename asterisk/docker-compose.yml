@@ -55,6 +55,9 @@ services:
       - ../asterisk/sorcery.conf:/etc/asterisk/sorcery.conf
       - ../asterisk/extconfig.conf:/etc/asterisk/extconfig.conf
       - ../asterisk/res_pgsql.conf:/etc/asterisk/res_pgsql.conf
+      - ../asterisk/res_odbc.conf:/etc/asterisk/res_odbc.conf
+      - ../asterisk/cdr_adaptive_odbc.conf:/etc/asterisk/cdr_adaptive_odbc.conf
+      - ../asterisk/odbc.ini:/etc/odbc.ini
       - ${DIALYRA_STORAGE_HOST_PATH:-../storage}:/storage
       - ../asterisk/var/lib/asterisk/sounds:/var/lib/asterisk/sounds
       - ${DIALYRA_STORAGE_HOST_PATH:-../storage}/audio-assets:/data/audio-assets
