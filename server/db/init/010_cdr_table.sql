@@ -1,0 +1,25 @@
+CREATE TABLE IF NOT EXISTS cdr (
+  calldate timestamp without time zone,
+  clid varchar(80),
+  src varchar(80),
+  dst varchar(80),
+  dcontext varchar(80),
+  channel varchar(80),
+  dstchannel varchar(80),
+  lastapp varchar(80),
+  lastdata varchar(80),
+  duration integer,
+  billsec integer,
+  disposition varchar(45),
+  amaflags integer,
+  accountcode varchar(20),
+  uniqueid varchar(150),
+  linkedid varchar(150),
+  userfield varchar(255),
+  peeraccount varchar(80),
+  sequence integer,
+  start timestamp without time zone,
+  answer timestamp without time zone,
+  "end" timestamp without time zone
+);
+

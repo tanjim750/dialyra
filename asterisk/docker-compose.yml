@@ -12,8 +12,15 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-dialyra_pass}
     ports:
       - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-dialyra_user} -d ${DB_NAME:-dialyra_db} -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     volumes:
       - dialyra_postgres_data:/var/lib/postgresql/data
+      - ../server/db/init:/docker-entrypoint-initdb.d:ro
     networks:
       dialyra-net:
         aliases:
@@ -66,8 +73,8 @@ services:
       - ../asterisk/var/log/asterisk:/var/log/asterisk
     depends_on:
       db:
-        condition: service_started
-        required: false
+        condition: service_healthy
+        required: true
       redis:
         condition: service_started
         required: false

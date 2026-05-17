@@ -68,6 +68,11 @@ Expected:
 - `Found adaptive CDR table cdr@pgcdr`
 - `odbc show all` shows active connections
 
+Note:
+
+- `asterisk/docker-compose.yml` now waits for Postgres health (`service_healthy`) before starting Asterisk.
+- After `up -d --build --force-recreate`, manual reloads are usually not required unless you changed config files at runtime.
+
 ## 7) Ensure CALL_ACTION_ID Is Stored in CDR
 
 In `asterisk/extensions.conf` outbound dialplan:
@@ -101,9 +106,21 @@ FROM cdr
 WHERE userfield LIKE '%call_action_id=<ACTION_ID>%';
 ```
 
+## 10) Automated CDR Table Creation
+
+This repo includes an init SQL:
+
+- `server/db/init/010_cdr_table.sql`
+
+Compose mounts it into Postgres at `/docker-entrypoint-initdb.d`, so `cdr` is created automatically on **fresh** DB initialization.
+
+Important:
+
+- Postgres entrypoint scripts run only when the data directory is empty.
+- If your DB volume already exists, run the `CREATE TABLE IF NOT EXISTS cdr (...)` SQL once manually.
+
 ## 9) Common Errors
 
 - `Data source name not found`: DSN/driver mismatch in `odbc.ini` or `odbcinst.ini`.
 - `Can't open lib ... psqlodbcw.so`: wrong driver path in `odbcinst.ini`.
 - `No such connection 'pgcdr'`: `res_odbc` failed, then `cdr_adaptive_odbc` has no usable connection.
-

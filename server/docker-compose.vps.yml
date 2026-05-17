@@ -14,6 +14,7 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - dialyra_postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     networks:
       dialyra-net:
         aliases:
