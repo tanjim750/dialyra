@@ -10,6 +10,7 @@ from app.middleware.error_handlers import register_error_handlers
 from app.middleware.request_id import register_request_id_middleware
 from app.services.ami_event_listener import start_ami_event_listener
 from app.api.v2.tts.worker_service import start_tts_worker
+from app.services.post_call_webhook_worker import start_post_call_webhook_worker
 from app.utils.logging import configure_logging
 
 
@@ -36,6 +37,7 @@ def create_app(config_name=None):
 
     start_ami_event_listener(app)
     start_tts_worker(app)
+    start_post_call_webhook_worker(app)
 
     return app
 

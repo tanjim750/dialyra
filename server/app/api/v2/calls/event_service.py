@@ -8,6 +8,7 @@ from flask import current_app
 from app.extensions import db
 from app.models import CallEvent, CallLog, CallSession
 from app.services.call_reconciliation import apply_cdr_truth_for_call
+from app.services.post_call_webhook_flush import flush_deferred_webhook_intents
 
 LOGGER = logging.getLogger(__name__)
 
@@ -621,6 +622,13 @@ def process_call_event(payload, business_id=None):
                 answered_at=(call_log.answered_at.isoformat() if call_log.answered_at else None),
                 ended_at=(call_log.ended_at.isoformat() if call_log.ended_at else None),
                 billsec=call_log.billsec,
+            )
+            flush_result = flush_deferred_webhook_intents(call_log, call_session)
+            _vlog(
+                "Post-call webhook intents flush",
+                call_log_id=call_log.id,
+                action_id=call_log.action_id,
+                **flush_result,
             )
 
     _apply_answered_invariant(call_log, call_session, now)

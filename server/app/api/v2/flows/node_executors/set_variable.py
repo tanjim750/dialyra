@@ -1,21 +1,5 @@
-import re
-
 from .base import NodeExecutionResult, node_config
-
-
-_TPL = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
-
-
-def _render(value, variables):
-    if not isinstance(value, str):
-        return value
-
-    def repl(match):
-        key = match.group(1)
-        resolved = variables.get(key)
-        return "" if resolved is None else str(resolved)
-
-    return _TPL.sub(repl, value)
+from app.services.template_resolver import render_template_value
 
 
 def execute(actor_business, node_payload, variables):
@@ -25,7 +9,7 @@ def execute(actor_business, node_payload, variables):
         return NodeExecutionResult(runtime_action={}, error="set_variable node missing config.key")
 
     raw_value = cfg.get("value")
-    rendered = _render(raw_value, variables)
+    rendered = render_template_value(raw_value, variables)
     variables[key] = rendered
 
     return NodeExecutionResult(

@@ -18,9 +18,11 @@ from app.models import (
     CallSession,
     FlowRuntimeEvent,
     FlowVersion,
+    PostCallWebhookJob,
     SipTrunk,
 )
 from app.services.call_reconciliation import apply_cdr_truth_for_call
+from app.services.post_call_webhook_worker import wake_post_call_webhook_worker
 from sqlalchemy import case, func
 
 
@@ -1039,6 +1041,186 @@ def get_call_history_by_id(actor_user, call_id):
     payload["timeline"] = timeline
     payload = _reconcile_call_history_payload(payload, call_session, timeline)
     return payload, None
+
+
+def _serialize_post_call_webhook_job(row):
+    return {
+        "id": row.id,
+        "business_id": row.business_id,
+        "call_action_id": row.call_action_id,
+        "call_session_id": row.call_session_id,
+        "call_log_uuid": row.call_log_uuid,
+        "node_id": row.node_id,
+        "node_key": row.node_key,
+        "sequence_no": row.sequence_no,
+        "method": row.method,
+        "url": row.url,
+        "status": row.status,
+        "attempt_count": row.attempt_count,
+        "next_retry_at": row.next_retry_at.isoformat() if row.next_retry_at else None,
+        "last_error": row.last_error,
+        "last_response_code": row.last_response_code,
+        "last_attempt_at": row.last_attempt_at.isoformat() if row.last_attempt_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def list_post_call_webhook_jobs_for_business(
+    *,
+    business_id,
+    call_session_id=None,
+    action_id=None,
+    status=None,
+    page=1,
+    page_size=20,
+):
+    query = PostCallWebhookJob.query.filter(PostCallWebhookJob.business_id == int(business_id))
+    if call_session_id is not None and str(call_session_id).strip():
+        query = query.filter(PostCallWebhookJob.call_session_id == str(call_session_id).strip())
+    if action_id is not None and str(action_id).strip():
+        query = query.filter(PostCallWebhookJob.call_action_id == str(action_id).strip())
+    if status is not None and str(status).strip():
+        query = query.filter(PostCallWebhookJob.status == str(status).strip().lower())
+
+    page = max(1, int(page or 1))
+    page_size = max(1, min(200, int(page_size or 20)))
+    total = query.count()
+    rows = (
+        query.order_by(PostCallWebhookJob.created_at.desc(), PostCallWebhookJob.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [_serialize_post_call_webhook_job(row) for row in rows],
+        "pagination": {"page": page, "page_size": page_size, "total": total},
+    }, None
+
+
+def get_post_call_webhook_job_for_business(*, business_id, job_id):
+    try:
+        normalized_id = int(job_id)
+    except (TypeError, ValueError):
+        return None, "Invalid webhook job id"
+    row = PostCallWebhookJob.query.filter_by(
+        id=normalized_id, business_id=int(business_id)
+    ).first()
+    if row is None:
+        return None, "Webhook job not found"
+    return _serialize_post_call_webhook_job(row), None
+
+
+def retry_post_call_webhook_job_for_business(*, business_id, job_id):
+    try:
+        normalized_id = int(job_id)
+    except (TypeError, ValueError):
+        return None, "Invalid webhook job id"
+
+    row = PostCallWebhookJob.query.filter_by(
+        id=normalized_id, business_id=int(business_id)
+    ).first()
+    if row is None:
+        return None, "Webhook job not found"
+    if str(row.status or "").strip().lower() == "processing":
+        return None, "Webhook job is currently processing"
+
+    row.status = "pending"
+    row.next_retry_at = None
+    row.last_error = None
+    row.last_response_code = None
+    row.last_response_body = None
+    row.last_attempt_at = None
+    row.completed_at = None
+    db.session.commit()
+    wake_post_call_webhook_worker()
+    return _serialize_post_call_webhook_job(row), None
+
+
+def bulk_retry_post_call_webhook_jobs_for_business(
+    *,
+    business_id,
+    status="failed",
+    call_session_id=None,
+    action_id=None,
+    limit=100,
+):
+    normalized_status = str(status or "failed").strip().lower()
+    allowed_statuses = {"failed", "retry_scheduled"}
+    if normalized_status not in allowed_statuses:
+        return None, "Invalid status filter for bulk retry"
+    try:
+        normalized_limit = max(1, min(500, int(limit or 100)))
+    except (TypeError, ValueError):
+        return None, "Invalid limit"
+
+    query = PostCallWebhookJob.query.filter(
+        PostCallWebhookJob.business_id == int(business_id),
+        PostCallWebhookJob.status == normalized_status,
+    )
+    if call_session_id is not None and str(call_session_id).strip():
+        query = query.filter(PostCallWebhookJob.call_session_id == str(call_session_id).strip())
+    if action_id is not None and str(action_id).strip():
+        query = query.filter(PostCallWebhookJob.call_action_id == str(action_id).strip())
+
+    rows = (
+        query.order_by(PostCallWebhookJob.created_at.asc(), PostCallWebhookJob.id.asc())
+        .limit(normalized_limit)
+        .all()
+    )
+    if not rows:
+        return {"retried_count": 0, "items": []}, None
+
+    items = []
+    for row in rows:
+        row.status = "pending"
+        row.next_retry_at = None
+        row.last_error = None
+        row.last_response_code = None
+        row.last_response_body = None
+        row.last_attempt_at = None
+        row.completed_at = None
+        items.append(_serialize_post_call_webhook_job(row))
+
+    db.session.commit()
+    wake_post_call_webhook_worker()
+    return {"retried_count": len(items), "items": items}, None
+
+
+def get_post_call_webhook_jobs_summary_for_business(*, business_id, action_id=None, call_session_id=None):
+    query = PostCallWebhookJob.query.filter(PostCallWebhookJob.business_id == int(business_id))
+    if action_id is not None and str(action_id).strip():
+        query = query.filter(PostCallWebhookJob.call_action_id == str(action_id).strip())
+    if call_session_id is not None and str(call_session_id).strip():
+        query = query.filter(PostCallWebhookJob.call_session_id == str(call_session_id).strip())
+
+    rows = query.with_entities(PostCallWebhookJob.status, func.count(PostCallWebhookJob.id)).group_by(
+        PostCallWebhookJob.status
+    ).all()
+    counts = {
+        "pending": 0,
+        "processing": 0,
+        "retry_scheduled": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+    total = 0
+    for status, count in rows:
+        key = str(status or "").strip().lower()
+        value = int(count or 0)
+        total += value
+        if key in counts:
+            counts[key] = value
+    return {
+        "business_id": int(business_id),
+        "action_id": (str(action_id).strip() if action_id is not None and str(action_id).strip() else None),
+        "call_session_id": (
+            str(call_session_id).strip() if call_session_id is not None and str(call_session_id).strip() else None
+        ),
+        "total": total,
+        "counts": counts,
+    }, None
 
 
 def get_call_metrics(actor_user, filters):

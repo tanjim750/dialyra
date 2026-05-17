@@ -5,6 +5,7 @@ from app.models.business_access_token import BusinessAccessToken
 from app.models.call_log import CallLog
 from app.models.call_event import CallEvent
 from app.models.call_session import CallSession
+from app.models.post_call_webhook_job import PostCallWebhookJob
 from app.models.flow import Flow
 from app.models.flow_edge import FlowEdge
 from app.models.flow_node import FlowNode
@@ -25,6 +26,7 @@ __all__ = [
     "CallLog",
     "CallEvent",
     "CallSession",
+    "PostCallWebhookJob",
     "Flow",
     "FlowEdge",
     "FlowNode",

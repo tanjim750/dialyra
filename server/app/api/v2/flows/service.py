@@ -4,6 +4,7 @@ from pathlib import Path
 from app.extensions import db
 from app.models import AudioAsset, Business, Flow, FlowEdge, FlowNode, FlowVersion, WorkspaceMembership
 from app.api.v2.tts.service import generate_tts_for_runtime_business
+from app.services.template_resolver import RESERVED_SYSTEM_VARIABLES
 
 VALID_FLOW_STATUSES = {"draft", "published", "archived", "disabled"}
 VALID_NODE_TYPES = {
@@ -256,6 +257,26 @@ def _validate_node_config(node_type, cfg, *, node_id=None, business_id=None):
         return errors
 
     if t == "webhook":
+        allowed_keys = {
+            "enabled",
+            "description",
+            "method",
+            "url",
+            "timeout_seconds",
+            "auth",
+            "headers",
+            "payload",
+            "input_map",
+            "success_criteria",
+        }
+        unknown_keys = sorted(set(config.keys()) - allowed_keys)
+        if unknown_keys:
+            _append_node_error(
+                errors,
+                "INVALID_WEBHOOK_CONFIG_KEYS",
+                f"webhook config has unsupported keys: {', '.join(unknown_keys)}",
+                node_id=node_id,
+            )
         method = str(config.get("method") or "").strip().upper()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             _append_node_error(
@@ -274,15 +295,142 @@ def _validate_node_config(node_type, cfg, *, node_id=None, business_id=None):
             )
         try:
             timeout = int(config.get("timeout_seconds"))
-            if timeout <= 0:
+            if timeout <= 0 or timeout > 30:
                 raise ValueError()
         except (TypeError, ValueError):
             _append_node_error(
                 errors,
                 "INVALID_WEBHOOK_TIMEOUT",
-                "webhook node requires positive integer config.timeout_seconds",
+                "webhook node requires positive integer config.timeout_seconds (1-30)",
                 node_id=node_id,
             )
+        auth = config.get("auth")
+        if auth is None or auth == "":
+            _append_node_error(
+                errors,
+                "MISSING_WEBHOOK_AUTH",
+                "webhook node requires config.auth object with type=none|header|basic",
+                node_id=node_id,
+            )
+        elif not isinstance(auth, dict):
+            _append_node_error(
+                errors,
+                "INVALID_WEBHOOK_AUTH",
+                "webhook config.auth must be an object",
+                node_id=node_id,
+            )
+        else:
+            auth_type = str(auth.get("type") or "").strip().lower()
+            if auth_type not in {"none", "header", "basic"}:
+                _append_node_error(
+                    errors,
+                    "INVALID_WEBHOOK_AUTH_TYPE",
+                    "webhook auth.type must be one of: none, header, basic",
+                    node_id=node_id,
+                )
+            if auth_type == "basic":
+                if not str(auth.get("username") or "").strip():
+                    _append_node_error(
+                        errors,
+                        "MISSING_WEBHOOK_BASIC_USERNAME",
+                        "webhook auth.type=basic requires auth.username",
+                        node_id=node_id,
+                    )
+                if not str(auth.get("password") or "").strip():
+                    _append_node_error(
+                        errors,
+                        "MISSING_WEBHOOK_BASIC_PASSWORD",
+                        "webhook auth.type=basic requires auth.password",
+                        node_id=node_id,
+                    )
+
+        headers = config.get("headers")
+        if headers is not None and not isinstance(headers, dict):
+            _append_node_error(
+                errors,
+                "INVALID_WEBHOOK_HEADERS",
+                "webhook config.headers must be an object when provided",
+                node_id=node_id,
+            )
+        if isinstance(auth, dict) and str(auth.get("type") or "").strip().lower() == "header":
+            if not isinstance(headers, dict) or not headers:
+                _append_node_error(
+                    errors,
+                    "MISSING_WEBHOOK_HEADER_AUTH",
+                    "webhook auth.type=header requires non-empty config.headers",
+                    node_id=node_id,
+                )
+
+        payload = config.get("payload")
+        if method in {"POST", "PUT", "PATCH"} and payload is None:
+            _append_node_error(
+                errors,
+                "MISSING_WEBHOOK_PAYLOAD",
+                "webhook config.payload is required for POST/PUT/PATCH",
+                node_id=node_id,
+            )
+        if payload is not None and not isinstance(payload, (dict, list, str, int, float, bool)):
+            _append_node_error(
+                errors,
+                "INVALID_WEBHOOK_PAYLOAD",
+                "webhook config.payload must be a valid JSON value",
+                node_id=node_id,
+            )
+
+        input_map = config.get("input_map")
+        if input_map is not None and not isinstance(input_map, dict):
+            _append_node_error(
+                errors,
+                "INVALID_WEBHOOK_INPUT_MAP",
+                "webhook config.input_map must be an object when provided",
+                node_id=node_id,
+            )
+        if isinstance(input_map, dict):
+            reserved_targets = sorted(
+                [str(k).strip() for k in input_map.keys() if str(k).strip() in RESERVED_SYSTEM_VARIABLES]
+            )
+            if reserved_targets:
+                _append_node_error(
+                    errors,
+                    "RESERVED_VARIABLE_OVERRIDE_BLOCKED",
+                    "webhook input_map cannot define reserved variables: "
+                    + ", ".join(reserved_targets),
+                    node_id=node_id,
+                )
+
+        success_criteria = config.get("success_criteria")
+        if success_criteria is not None:
+            if not isinstance(success_criteria, dict):
+                _append_node_error(
+                    errors,
+                    "INVALID_WEBHOOK_SUCCESS_CRITERIA",
+                    "webhook config.success_criteria must be an object when provided",
+                    node_id=node_id,
+                )
+            else:
+                status_codes = success_criteria.get("status_codes")
+                if status_codes is not None:
+                    if not isinstance(status_codes, list) or not status_codes:
+                        _append_node_error(
+                            errors,
+                            "INVALID_WEBHOOK_SUCCESS_CODES",
+                            "webhook success_criteria.status_codes must be a non-empty array when provided",
+                            node_id=node_id,
+                        )
+                    else:
+                        for code in status_codes:
+                            try:
+                                numeric = int(code)
+                                if numeric < 100 or numeric > 599:
+                                    raise ValueError()
+                            except (TypeError, ValueError):
+                                _append_node_error(
+                                    errors,
+                                    "INVALID_WEBHOOK_SUCCESS_CODES",
+                                    "webhook success_criteria.status_codes must contain valid HTTP status codes (100-599)",
+                                    node_id=node_id,
+                                )
+                                break
         return errors
 
     if t == "transfer_call":

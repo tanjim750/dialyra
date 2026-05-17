@@ -9,6 +9,11 @@ from app.api.v2.calls.service import (
     get_call_history_by_id,
     list_call_audit_events,
     list_call_history,
+    list_post_call_webhook_jobs_for_business,
+    get_post_call_webhook_job_for_business,
+    retry_post_call_webhook_job_for_business,
+    bulk_retry_post_call_webhook_jobs_for_business,
+    get_post_call_webhook_jobs_summary_for_business,
     originate_call,
     originate_call_for_business,
     retry_call_session_for_business,
@@ -21,6 +26,7 @@ from app.middleware.permissions_v2 import (
     require_stuff_or_superuser,
 )
 from app.services.audit_service import log_audit_event
+from app.services.post_call_webhook_worker import get_post_call_webhook_worker_health
 
 bp = Blueprint("calls_v2", __name__, url_prefix="/api/v2")
 
@@ -421,6 +427,121 @@ def list_runtime_call_events_endpoint():
         )
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid pagination params"}), 400
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify(result), 200
+
+
+@bp.get("/runtime/calls/webhook-jobs")
+@access_token_context_required("calls:read")
+def list_runtime_post_call_webhook_jobs_endpoint():
+    status = request.args.get("status")
+    action_id = request.args.get("action_id")
+    call_session_id = request.args.get("call_session_id")
+    page = request.args.get("page", 1)
+    page_size = request.args.get("page_size", 20)
+    try:
+        result, error = list_post_call_webhook_jobs_for_business(
+            business_id=g.actor_business.id,
+            call_session_id=call_session_id,
+            action_id=action_id,
+            status=status,
+            page=int(page),
+            page_size=int(page_size),
+        )
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid pagination params"}), 400
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify(result), 200
+
+
+@bp.get("/runtime/calls/<string:call_id>/webhook-jobs")
+@access_token_context_required("calls:read")
+def list_runtime_post_call_webhook_jobs_by_call_id_endpoint(call_id):
+    status = request.args.get("status")
+    page = request.args.get("page", 1)
+    page_size = request.args.get("page_size", 20)
+    try:
+        result, error = list_post_call_webhook_jobs_for_business(
+            business_id=g.actor_business.id,
+            call_session_id=call_id,
+            status=status,
+            page=int(page),
+            page_size=int(page_size),
+        )
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid pagination params"}), 400
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify(result), 200
+
+
+@bp.get("/runtime/calls/webhook-worker/health")
+@access_token_context_required("calls:read")
+def runtime_post_call_webhook_worker_health_endpoint():
+    return jsonify(get_post_call_webhook_worker_health(current_app)), 200
+
+
+@bp.get("/runtime/calls/webhook-jobs/<string:job_id>")
+@access_token_context_required("calls:read")
+def get_runtime_post_call_webhook_job_endpoint(job_id):
+    result, error = get_post_call_webhook_job_for_business(
+        business_id=g.actor_business.id,
+        job_id=job_id,
+    )
+    if error:
+        status = 404 if error == "Webhook job not found" else 400
+        return jsonify({"error": error}), status
+    return jsonify(result), 200
+
+
+@bp.post("/runtime/calls/webhook-jobs/<string:job_id>/retry")
+@access_token_context_required("calls:read")
+def retry_runtime_post_call_webhook_job_endpoint(job_id):
+    result, error = retry_post_call_webhook_job_for_business(
+        business_id=g.actor_business.id,
+        job_id=job_id,
+    )
+    if error:
+        if error == "Webhook job not found":
+            return jsonify({"error": error}), 404
+        if error == "Webhook job is currently processing":
+            return jsonify({"status": "warning", "message": error}), 409
+        return jsonify({"error": error}), 400
+    return jsonify({"status": "retry_queued", "job": result}), 200
+
+
+@bp.post("/runtime/calls/webhook-jobs/retry")
+@access_token_context_required("calls:read")
+def bulk_retry_runtime_post_call_webhook_jobs_endpoint():
+    payload = request.get_json(silent=True) or {}
+    status = payload.get("status", "failed")
+    call_session_id = payload.get("call_session_id")
+    action_id = payload.get("action_id")
+    limit = payload.get("limit", 100)
+    result, error = bulk_retry_post_call_webhook_jobs_for_business(
+        business_id=g.actor_business.id,
+        status=status,
+        call_session_id=call_session_id,
+        action_id=action_id,
+        limit=limit,
+    )
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify({"status": "bulk_retry_queued", **result}), 200
+
+
+@bp.get("/runtime/calls/webhook-jobs/summary")
+@access_token_context_required("calls:read")
+def runtime_post_call_webhook_jobs_summary_endpoint():
+    action_id = request.args.get("action_id")
+    call_session_id = request.args.get("call_session_id")
+    result, error = get_post_call_webhook_jobs_summary_for_business(
+        business_id=g.actor_business.id,
+        action_id=action_id,
+        call_session_id=call_session_id,
+    )
     if error:
         return jsonify({"error": error}), 400
     return jsonify(result), 200

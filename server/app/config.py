@@ -61,6 +61,22 @@ class Config:
     AMI_EVENT_RECONNECT_DELAY_SEC = float(
         os.getenv("AMI_EVENT_RECONNECT_DELAY_SEC", "2")
     )
+    REDIS_URL = os.getenv("REDIS_URL", "")
+    POSTCALL_INTENT_TTL_SEC = int(os.getenv("POSTCALL_INTENT_TTL_SEC", "86400"))
+    POSTCALL_FLUSH_LOCK_TTL_SEC = int(os.getenv("POSTCALL_FLUSH_LOCK_TTL_SEC", "60"))
+    POSTCALL_WEBHOOK_WORKER_ENABLED = (
+        os.getenv("POSTCALL_WEBHOOK_WORKER_ENABLED", "true").lower() == "true"
+    )
+    POSTCALL_WEBHOOK_WORKER_POLL_SEC = float(
+        os.getenv("POSTCALL_WEBHOOK_WORKER_POLL_SEC", "1.5")
+    )
+    POSTCALL_WEBHOOK_WORKER_BATCH_SIZE = int(
+        os.getenv("POSTCALL_WEBHOOK_WORKER_BATCH_SIZE", "20")
+    )
+    POSTCALL_WEBHOOK_MAX_ATTEMPTS = int(os.getenv("POSTCALL_WEBHOOK_MAX_ATTEMPTS", "4"))
+    POSTCALL_WEBHOOK_RETRY_SCHEDULE_SEC = os.getenv(
+        "POSTCALL_WEBHOOK_RETRY_SCHEDULE_SEC", "10,30,120"
+    )
     CALL_PIPELINE_VERBOSE = os.getenv("CALL_PIPELINE_VERBOSE", "false").lower() == "true"
     # 0 means unlimited system-wide concurrent outbound calls.
     SYSTEM_MAX_CONCURRENT_CALLS = int(os.getenv("SYSTEM_MAX_CONCURRENT_CALLS", "0"))
@@ -124,6 +140,8 @@ class Config:
     FLOW_RUNTIME_ENABLE_SET_VARIABLE = os.getenv("FLOW_RUNTIME_ENABLE_SET_VARIABLE", "").lower()
     FLOW_RUNTIME_ENABLE_GOTO = os.getenv("FLOW_RUNTIME_ENABLE_GOTO", "").lower()
     FLOW_RUNTIME_ENABLE_WEBHOOK = os.getenv("FLOW_RUNTIME_ENABLE_WEBHOOK", "").lower()
+    # When true, webhook nodes capture post-call intent during runtime and do not execute HTTP inline.
+    FLOW_WEBHOOK_DEFERRED_MODE = os.getenv("FLOW_WEBHOOK_DEFERRED_MODE", "true").lower() == "true"
     FLOW_RUNTIME_ENABLE_TRANSFER_CALL = os.getenv("FLOW_RUNTIME_ENABLE_TRANSFER_CALL", "").lower()
     FLOW_RUNTIME_ENABLE_WAIT = os.getenv("FLOW_RUNTIME_ENABLE_WAIT", "").lower()
     FLOW_RUNTIME_ENABLE_RECORD_CONTROL = os.getenv("FLOW_RUNTIME_ENABLE_RECORD_CONTROL", "").lower()

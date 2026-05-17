@@ -304,6 +304,7 @@ def _execute_node_with_observability(
             "node_type": node_type,
             "duration_ms": elapsed_ms,
             "runtime_action_type": execution.runtime_action.get("type"),
+            "webhook": (execution.metadata or {}).get("webhook"),
             "rollout_source": enable_source,
         },
         node_id=node_payload.get("id"),
