@@ -141,10 +141,30 @@ def _apply_answered_invariant(call_log, call_session, now):
     answered_statuses = {"answered", "completed"}
     if call_log is not None:
         if str(call_log.status or "").strip().lower() in answered_statuses and call_log.answered_at is None:
-            call_log.answered_at = now
+            if call_log.ended_at is not None:
+                sec_hint = int(call_log.billsec or 0) or int(call_log.duration_sec or 0)
+                if sec_hint > 0:
+                    call_log.answered_at = call_log.ended_at - timedelta(seconds=sec_hint)
+            if call_log.answered_at is None:
+                call_log.answered_at = now
+        if call_log.answered_at and call_log.ended_at and call_log.answered_at >= call_log.ended_at:
+            sec_hint = int(call_log.billsec or 0) or int(call_log.duration_sec or 0) or 1
+            call_log.answered_at = call_log.ended_at - timedelta(seconds=max(1, sec_hint))
     if call_session is not None:
         if str(call_session.status or "").strip().lower() in answered_statuses and call_session.answered_at is None:
-            call_session.answered_at = now
+            if call_session.ended_at is not None:
+                sec_hint = int(call_log.billsec or 0) if call_log is not None else 0
+                if sec_hint <= 0 and call_log is not None:
+                    sec_hint = int(call_log.duration_sec or 0)
+                if sec_hint > 0:
+                    call_session.answered_at = call_session.ended_at - timedelta(seconds=sec_hint)
+            if call_session.answered_at is None:
+                call_session.answered_at = now
+        if call_session.answered_at and call_session.ended_at and call_session.answered_at >= call_session.ended_at:
+            sec_hint = int(call_log.billsec or 0) if call_log is not None else 0
+            if sec_hint <= 0 and call_log is not None:
+                sec_hint = int(call_log.duration_sec or 0)
+            call_session.answered_at = call_session.ended_at - timedelta(seconds=max(1, sec_hint or 1))
 
 
 def _finalize_from_cdr_with_retry(call_log, call_session, attempts=6, delay_sec=0.5):

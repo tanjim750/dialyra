@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.extensions import db
-from app.models import CallLog, CallSession
+from app.models import CallLog, CallSession, FlowRuntimeEvent
 
 FINAL_STATUSES = {"completed", "failed", "no_answer", "busy", "canceled"}
 SESSION_FINAL_STATUSES = {"completed", "failed", "no_answer", "busy", "cancelled", "hangup"}
@@ -112,21 +112,28 @@ def _normalize_identifier(value):
 
 def _apply_answered_invariant(call_log: CallLog, call_session: CallSession | None):
     answered_statuses = {"answered", "completed"}
-    if (
-        str(call_log.status or "").strip().lower() in answered_statuses
-        and call_log.answered_at is None
-        and call_log.ended_at is not None
-    ):
-        call_log.answered_at = call_log.ended_at
+    if str(call_log.status or "").strip().lower() in answered_statuses:
+        if call_log.answered_at is None and call_log.ended_at is not None:
+            # Prefer deriving from known billsec/duration rather than forcing
+            # answered_at=end_time, which creates false zero-billsec records.
+            sec_hint = int(call_log.billsec or 0)
+            if sec_hint <= 0:
+                sec_hint = int(call_log.duration_sec or 0)
+            if sec_hint > 0:
+                call_log.answered_at = call_log.ended_at - timedelta(seconds=sec_hint)
+        if call_log.answered_at and call_log.ended_at and call_log.answered_at >= call_log.ended_at:
+            sec_hint = int(call_log.billsec or 0) or int(call_log.duration_sec or 0) or 1
+            call_log.answered_at = call_log.ended_at - timedelta(seconds=max(1, sec_hint))
 
     if call_session is not None:
-        if (
-            str(call_session.status or "").strip().lower() in answered_statuses
-            and call_session.answered_at is None
-        ):
-            call_session.answered_at = (
-                call_log.answered_at or call_session.ended_at or call_log.ended_at
-            )
+        if str(call_session.status or "").strip().lower() in answered_statuses:
+            if call_session.answered_at is None:
+                call_session.answered_at = (
+                    call_log.answered_at or call_session.ended_at or call_log.ended_at
+                )
+            if call_session.answered_at and call_session.ended_at and call_session.answered_at >= call_session.ended_at:
+                sec_hint = int(call_log.billsec or 0) or int(call_log.duration_sec or 0) or 1
+                call_session.answered_at = call_session.ended_at - timedelta(seconds=max(1, sec_hint))
 
 
 def _find_call_log_for_cdr(row: dict[str, Any], window_start: datetime):
@@ -219,6 +226,13 @@ def _to_int_or_none(value):
         return None
 
 
+def _is_invalid_answer_dt(value):
+    if value is None:
+        return True
+    # Guard against bogus epoch-like values from noisy CDR legs.
+    return value <= datetime(1971, 1, 1)
+
+
 def _parse_userfield_action_id(value):
     text = str(value or "").strip()
     if not text:
@@ -266,6 +280,7 @@ def _fetch_best_cdr_row_for_call(call_log: CallLog):
             "start",
             "answer",
             "end",
+            "end_time",
             "calldate",
             "userfield",
         ]
@@ -319,8 +334,8 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
     src = _first_non_empty(cdr_row.get("src"))
     dst = _first_non_empty(cdr_row.get("dst"))
     started_at = _coerce_dt(_first_non_empty(cdr_row.get("start"), cdr_row.get("calldate")))
-    answered_at = _coerce_dt(cdr_row.get("answer"))
-    ended_at = _coerce_dt(cdr_row.get("end"))
+    cdr_answered_at = _coerce_dt(cdr_row.get("answer"))
+    cdr_ended_at = _coerce_dt(_first_non_empty(cdr_row.get("end"), cdr_row.get("end_time")))
     duration = _to_int_or_none(cdr_row.get("duration"))
     billsec = _to_int_or_none(cdr_row.get("billsec"))
     mapped_status = _map_disposition_to_status(_first_non_empty(cdr_row.get("disposition")))
@@ -335,14 +350,21 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
         call_log.to_number = str(dst)
     if started_at:
         call_log.started_at = started_at
-    if answered_at:
-        call_log.answered_at = answered_at
-    if ended_at:
-        call_log.ended_at = ended_at
+    # Priority rule:
+    # cdr_answer -> history_answered fallback
+    if not _is_invalid_answer_dt(cdr_answered_at):
+        call_log.answered_at = cdr_answered_at
+    elif call_log.answered_at is None and call_session is not None and call_session.answered_at is not None:
+        call_log.answered_at = call_session.answered_at
+    # cdr_end_time -> history_ended_at fallback
+    if cdr_ended_at:
+        call_log.ended_at = cdr_ended_at
+    elif call_log.ended_at is None and call_session is not None and call_session.ended_at is not None:
+        call_log.ended_at = call_session.ended_at
     if duration is not None:
         call_log.duration_sec = duration
     if billsec is not None:
-        call_log.billsec = billsec
+        call_log.billsec = max(0, billsec)
     if mapped_status:
         call_log.status = mapped_status
 
@@ -353,12 +375,39 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
             call_session.linkedid = linkedid
         if started_at:
             call_session.started_at = started_at
-        if answered_at:
-            call_session.answered_at = answered_at
-        if ended_at:
-            call_session.ended_at = ended_at
+        if not _is_invalid_answer_dt(cdr_answered_at):
+            call_session.answered_at = cdr_answered_at
+        elif call_session.answered_at is None and call_log.answered_at is not None:
+            call_session.answered_at = call_log.answered_at
+        if cdr_ended_at:
+            call_session.ended_at = cdr_ended_at
+        elif call_session.ended_at is None and call_log.ended_at is not None:
+            call_session.ended_at = call_log.ended_at
         if mapped_status:
             call_session.status = _to_session_status(mapped_status)
+
+    # Billsec fallback chain:
+    # 1) If billsec missing/zero but valid answer+end exist => derive from timestamps.
+    if int(call_log.billsec or 0) == 0 and call_log.answered_at and call_log.ended_at:
+        delta = int((call_log.ended_at - call_log.answered_at).total_seconds())
+        if delta > 0:
+            call_log.billsec = delta
+    # 2) If still zero and runtime had DTMF interaction, infer from duration with conservative offset.
+    if int(call_log.billsec or 0) == 0 and int(call_log.duration_sec or 0) > 0:
+        has_dtmf = False
+        if call_session is not None:
+            has_dtmf = (
+                FlowRuntimeEvent.query.filter(
+                    FlowRuntimeEvent.business_id == int(call_log.business_id),
+                    FlowRuntimeEvent.call_session_id == str(call_session.id),
+                    FlowRuntimeEvent.event_type == "dtmf.received",
+                ).first()
+                is not None
+            )
+        if has_dtmf:
+            duration_val = int(call_log.duration_sec or 0)
+            offset = 3 if duration_val <= 15 else 5
+            call_log.billsec = max(1, duration_val - offset)
 
     _apply_answered_invariant(call_log, call_session)
     return True
