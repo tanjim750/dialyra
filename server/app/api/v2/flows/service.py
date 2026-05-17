@@ -135,17 +135,37 @@ def _validate_node_config(node_type, cfg, *, node_id=None):
     t = str(node_type or "").strip().lower()
     config = cfg if isinstance(cfg, dict) else {}
 
-    if t == "play_audio":
-        if not config.get("audio_asset_id"):
+    def _validate_audio_asset_id(required=False):
+        raw = config.get("audio_asset_id")
+        if raw in (None, ""):
+            if required:
+                _append_node_error(
+                    errors,
+                    "MISSING_PLAY_AUDIO_ASSET_ID",
+                    "play_audio node requires config.audio_asset_id",
+                    node_id=node_id,
+                )
+            return None
+        try:
+            normalized = int(raw)
+            if normalized <= 0:
+                raise ValueError()
+        except (TypeError, ValueError):
             _append_node_error(
                 errors,
-                "MISSING_PLAY_AUDIO_ASSET_ID",
-                "play_audio node requires config.audio_asset_id",
+                "INVALID_AUDIO_ASSET_ID",
+                "config.audio_asset_id must be a positive integer",
                 node_id=node_id,
             )
+            return None
+        return normalized
+
+    if t == "play_audio":
+        _validate_audio_asset_id(required=True)
         return errors
 
     if t in {"say_text", "tts"}:
+        _validate_audio_asset_id(required=False)
         if not str(config.get("text") or "").strip():
             _append_node_error(
                 errors,
