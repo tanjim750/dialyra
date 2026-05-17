@@ -180,11 +180,17 @@ def _resolve_next_edge(edges, source_node_id, result_type, value, variables):
     if exact:
         return _sort(exact)[0]
 
-    # 2) Condition type match without value (for dtmf only, fallback behavior)
+    # 2) DTMF unmatched handling:
+    # If runtime returned DTMF but no exact dtmf edge matched, route to invalid_input
+    # when present instead of falling through to an arbitrary dtmf edge.
     if result_type == "dtmf":
-        typed = [e for e in scoped if str(e.get("condition_type") or "").strip().lower() == "dtmf"]
-        if typed:
-            return _sort(typed)[0]
+        invalid_edges = [
+            e for e in scoped if str(e.get("condition_type") or "").strip().lower() == "invalid_input"
+        ]
+        if invalid_edges:
+            return _sort(invalid_edges)[0]
+        # No invalid_input edge configured; do not guess a dtmf branch.
+        return None
 
     # 3) Error fallback edge
     error_edges = [e for e in scoped if str(e.get("condition_type") or "").strip().lower() == "error"]
