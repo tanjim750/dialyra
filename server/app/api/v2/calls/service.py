@@ -672,6 +672,10 @@ def request_hangup_for_business(
 
 
 def _serialize_call_log(row):
+    normalized_call_status = "no_answer"
+    raw_status = str(row.status or "").strip().lower()
+    if row.answered_at is not None or raw_status in {"answered", "completed"}:
+        normalized_call_status = "answer"
     return {
         "id": row.id,
         "uuid": row.uuid,
@@ -686,6 +690,7 @@ def _serialize_call_log(row):
         "to_number": row.to_number,
         "dialed_number": row.dialed_number,
         "status": row.status,
+        "call_status": normalized_call_status,
         "started_at": row.started_at.isoformat() if row.started_at else None,
         "answered_at": row.answered_at.isoformat() if row.answered_at else None,
         "ended_at": row.ended_at.isoformat() if row.ended_at else None,
@@ -895,6 +900,12 @@ def _reconcile_call_history_payload(payload, call_session, timeline):
     # Last guard: if no session evidence but DTMF exists, treat as answered interaction.
     if str(payload.get("status") or "").strip().lower() == "no_answer" and has_runtime_dtmf:
         payload["status"] = "answered"
+
+    normalized_status = str(payload.get("status") or "").strip().lower()
+    if payload.get("answered_at") is not None or normalized_status in {"answered", "completed"}:
+        payload["call_status"] = "answer"
+    else:
+        payload["call_status"] = "no_answer"
 
     return payload
 

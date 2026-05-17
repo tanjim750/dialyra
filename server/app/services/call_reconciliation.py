@@ -364,6 +364,7 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
     duration = _to_int_or_none(cdr_row.get("duration"))
     billsec = _to_int_or_none(cdr_row.get("billsec"))
     mapped_status = _map_disposition_to_status(_first_non_empty(cdr_row.get("disposition")))
+    history_ended_ref = call_log.ended_at or (call_session.ended_at if call_session is not None else None)
 
     if uniqueid:
         call_log.asterisk_uniqueid = uniqueid
@@ -377,7 +378,18 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
         call_log.started_at = started_at
     # Priority rule:
     # cdr_answer -> history_answered fallback
-    if not _is_invalid_answer_dt(cdr_answered_at):
+    cdr_answer_is_timeline_consistent = True
+    if cdr_answered_at and history_ended_ref and cdr_answered_at >= history_ended_ref:
+        cdr_answer_is_timeline_consistent = False
+        _vlog(
+            "CDR answer ignored: inconsistent with known ended_at",
+            call_log_id=call_log.id,
+            action_id=call_log.action_id,
+            cdr_answered_at=(cdr_answered_at.isoformat() if cdr_answered_at else None),
+            history_ended_at=(history_ended_ref.isoformat() if history_ended_ref else None),
+        )
+
+    if not _is_invalid_answer_dt(cdr_answered_at) and cdr_answer_is_timeline_consistent:
         call_log.answered_at = cdr_answered_at
     elif call_log.answered_at is None and call_session is not None and call_session.answered_at is not None:
         call_log.answered_at = call_session.answered_at
@@ -400,7 +412,7 @@ def apply_cdr_truth_for_call(call_log: CallLog, call_session: CallSession | None
             call_session.linkedid = linkedid
         if started_at:
             call_session.started_at = started_at
-        if not _is_invalid_answer_dt(cdr_answered_at):
+        if not _is_invalid_answer_dt(cdr_answered_at) and cdr_answer_is_timeline_consistent:
             call_session.answered_at = cdr_answered_at
         elif call_session.answered_at is None and call_log.answered_at is not None:
             call_session.answered_at = call_log.answered_at
