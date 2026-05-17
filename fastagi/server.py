@@ -13,6 +13,9 @@ REQUEST_TIMEOUT_SEC = float(os.getenv("FASTAGI_INTERNAL_TIMEOUT_SEC", "30"))
 MAX_RUNTIME_STEPS = int(os.getenv("FASTAGI_MAX_RUNTIME_STEPS", "32"))
 DTMF_GRACE_MS = max(100, int(os.getenv("FASTAGI_DTMF_GRACE_MS", "1200")))
 DTMF_TIMEOUT_RETRY_MS = max(100, int(os.getenv("FASTAGI_DTMF_TIMEOUT_RETRY_MS", "900")))
+EMIT_SYNTHETIC_HANGUP_EVENT = str(
+    os.getenv("FASTAGI_EMIT_SYNTHETIC_HANGUP_EVENT", "false")
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _json_dumps(data):
@@ -71,25 +74,25 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         except Exception:
             pass
 
-        # Also emit a synthetic AMI-style hangup event so call-event pipeline
-        # can finalize even if listener misses a leg.
-        try:
-            _api_post(
-                "/api/v2/internal/call-events",
-                {
-                    "Event": "Hangup",
-                    "ActionID": str((call_context or {}).get("call_action_id") or ""),
-                    "Uniqueid": str((call_context or {}).get("agi_uniqueid") or ""),
-                    "Linkedid": str((call_context or {}).get("agi_uniqueid") or ""),
-                    "Cause": "16",
-                    "Cause-txt": str(reason or "Normal Clearing"),
-                    "Channel": str((call_context or {}).get("agi_channel") or ""),
-                    "Timestamp": str(time.time()),
-                },
-                extra_headers=self._internal_headers(call_context),
-            )
-        except Exception:
-            pass
+        # Optional fallback only. AMI listener is the primary hangup source of truth.
+        if EMIT_SYNTHETIC_HANGUP_EVENT:
+            try:
+                _api_post(
+                    "/api/v2/internal/call-events",
+                    {
+                        "Event": "Hangup",
+                        "ActionID": str((call_context or {}).get("call_action_id") or ""),
+                        "Uniqueid": str((call_context or {}).get("agi_uniqueid") or ""),
+                        "Linkedid": str((call_context or {}).get("agi_uniqueid") or ""),
+                        "Cause": "16",
+                        "Cause-txt": str(reason or "Normal Clearing"),
+                        "Channel": str((call_context or {}).get("agi_channel") or ""),
+                        "Timestamp": str(time.time()),
+                    },
+                    extra_headers=self._internal_headers(call_context),
+                )
+            except Exception:
+                pass
 
     def _get_pending_dtmf(self):
         return str(getattr(self, "_pending_dtmf", "") or "")
@@ -468,7 +471,7 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
         if action_type == "wait":
             self._verbose("FastAGI action=wait", 1)
             duration = max(1, int(action.get("duration_seconds") or 1))
-            self._wait_for_digit(duration * 1000)
+            wait_digit = self._normalize_digit(self._wait_for_digit(duration * 1000))
             if self._is_channel_hungup():
                 self._verbose("FastAGI wait detected channel hangup", 1)
                 self._emit_hangup_signals(
@@ -478,6 +481,12 @@ class FastAGIHandler(socketserver.StreamRequestHandler):
                     {"duration_seconds": duration},
                 )
                 return {"terminal": True, "result_type": "hangup"}
+            if wait_digit:
+                self._set_pending_dtmf(wait_digit)
+                self._verbose(
+                    f"FastAGI wait buffered digit={wait_digit} playback_age_ms={self._last_playback_age_ms()}",
+                    1,
+                )
             self._post_runtime_event(
                 call_session_id,
                 "wait-event",

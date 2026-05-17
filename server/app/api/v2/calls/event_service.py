@@ -25,6 +25,8 @@ STATUS_RANK = {
     "cancelled": 3,
     "hangup": 3,
 }
+TERMINAL_STATUSES = {"completed", "failed", "no_answer", "busy", "canceled", "cancelled", "hangup"}
+STRICT_CORRELATION_EVENTS = {"OriginateResponse", "DialBegin", "DialEnd", "BridgeEnter", "BridgeCreate", "Hangup"}
 
 
 def _pipeline_verbose_enabled():
@@ -165,8 +167,6 @@ def _apply_answered_invariant(call_log, call_session, now):
                 sec_hint = int(call_log.billsec or 0) or int(call_log.duration_sec or 0)
                 if sec_hint > 0:
                     call_log.answered_at = call_log.ended_at - timedelta(seconds=sec_hint)
-            if call_log.answered_at is None:
-                call_log.answered_at = now
         if call_log.answered_at and call_log.ended_at and call_log.answered_at >= call_log.ended_at:
             sec_hint = int(call_log.billsec or 0) or int(call_log.duration_sec or 0) or 1
             call_log.answered_at = call_log.ended_at - timedelta(seconds=max(1, sec_hint))
@@ -178,8 +178,6 @@ def _apply_answered_invariant(call_log, call_session, now):
                     sec_hint = int(call_log.duration_sec or 0)
                 if sec_hint > 0:
                     call_session.answered_at = call_session.ended_at - timedelta(seconds=sec_hint)
-            if call_session.answered_at is None:
-                call_session.answered_at = now
         if call_session.answered_at and call_session.ended_at and call_session.answered_at >= call_session.ended_at:
             sec_hint = int(call_log.billsec or 0) if call_log is not None else 0
             if sec_hint <= 0 and call_log is not None:
@@ -199,10 +197,24 @@ def _finalize_from_cdr_with_retry(call_log, call_session, attempts=6, delay_sec=
 
 
 def _should_upgrade_status(current_status, candidate_status):
-    return STATUS_RANK.get(str(candidate_status or "").strip().lower(), 0) >= STATUS_RANK.get(
-        str(current_status or "queued").strip().lower(),
-        0,
-    )
+    cur = str(current_status or "queued").strip().lower()
+    cand = str(candidate_status or "").strip().lower()
+    if not cand:
+        return False
+    cur_rank = STATUS_RANK.get(cur, 0)
+    cand_rank = STATUS_RANK.get(cand, 0)
+    if cand_rank > cur_rank:
+        return True
+    if cand_rank < cur_rank:
+        return False
+    # Equal-rank transitions are risky for terminal states; allow only identical state.
+    if cur in TERMINAL_STATUSES and cand in TERMINAL_STATUSES:
+        return cur == cand
+    return cur != cand
+
+
+def _allow_loose_correlation(event_name):
+    return str(event_name or "").strip() not in STRICT_CORRELATION_EVENTS
 
 
 def _resolve_status(event_name, payload):
@@ -264,7 +276,7 @@ def _event_fingerprint(payload):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _find_call_log(payload, business_id=None):
+def _find_call_log(payload, business_id=None, allow_loose=False):
     action_id = _normalize_identifier(_value(payload, "ActionID", "actionid"))
     uniqueid = _normalize_identifier(
         _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
@@ -287,6 +299,8 @@ def _find_call_log(payload, business_id=None):
         row = query.filter(CallLog.linkedid == str(linkedid)).order_by(CallLog.id.desc()).first()
         if row:
             return row
+    if not allow_loose:
+        return None
     channel_digits = _extract_channel_digits(payload)
     if channel_digits:
         # Conservative fallback: correlate by recent destination/caller numbers.
@@ -299,7 +313,7 @@ def _find_call_log(payload, business_id=None):
     return None
 
 
-def _find_call_session(payload, business_id=None):
+def _find_call_session(payload, business_id=None, allow_loose=False):
     action_id = _normalize_identifier(_value(payload, "ActionID", "actionid"))
     uniqueid = _normalize_identifier(
         _value(payload, "Uniqueid", "UniqueID", "DestUniqueid", "destuniqueid")
@@ -322,6 +336,8 @@ def _find_call_session(payload, business_id=None):
         row = query.filter(CallSession.linkedid == str(linkedid)).order_by(CallSession.id.desc()).first()
         if row:
             return row
+    if not allow_loose:
+        return None
     channel_candidates = _extract_channel_candidates(payload)
     if channel_candidates:
         for candidate in channel_candidates:
@@ -419,8 +435,9 @@ def process_call_event(payload, business_id=None):
                 "status": "duplicate_ignored",
             }, None
 
-    call_log = _find_call_log(payload, business_id=business_id)
-    call_session = _find_call_session(payload, business_id=business_id)
+    allow_loose = _allow_loose_correlation(event_name)
+    call_log = _find_call_log(payload, business_id=business_id, allow_loose=allow_loose)
+    call_session = _find_call_session(payload, business_id=business_id, allow_loose=allow_loose)
     if call_log is None and call_session is not None and call_session.ami_action_id:
         call_log = (
             CallLog.query.filter(CallLog.action_id == str(call_session.ami_action_id))
@@ -464,9 +481,9 @@ def process_call_event(payload, business_id=None):
             action_id=action_id,
             uniqueid=uniqueid,
             linkedid=linkedid,
-            processing_status="failed",
+            processing_status="ignored_unmatched",
             process_attempts=1,
-            last_error="Call correlation failed",
+            last_error="Call correlation missed (strict id match required)",
             processed_at=None,
         )
         db.session.add(call_event)
